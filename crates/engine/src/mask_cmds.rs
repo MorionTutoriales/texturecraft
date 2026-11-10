@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add fill",
             ["Layers", "Effects"],
             None,
-            "{layer?, target?: mask|content, name?, mask: value?: 0..1 | procedural?: kind, scale?, seed? | anchor?: anchor effect id, anchorChannel?: channel (height); content: color?, roughness?, metallic?, height?, opacity? (default: every layer channel); projection?}",
+            "{layer?, target?: mask|content, name?, mask: value?: 0..1 | image?: resource name | procedural?: kind, scale?, seed? | anchor?: anchor effect id, anchorChannel?: channel (height); content: color?, roughness?, metallic?, height?, opacity? (default: every layer channel); projection?}",
             has_layer,
             add_fill
         ),
@@ -94,7 +94,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit effect",
             [],
             None,
-            "{effect, visible?, blend?, opacity?, name?, filter?: id from filter.list (a filter effect only: swaps its type, keeping position, blend and opacity; its current id edits it in place), level?, softness?, noise?, noiseScale?, invert?, mode?, sizes?, value?, anchor?, anchorChannel?, inLow?, inHigh?, gamma?, outLow?, outHigh?, tolerance?, colors?: [[r,g,b], ...] (a color selection's ID colors), filter parameters (see effect.add.filter)}",
+            "{effect, visible?, blend?, opacity?, name?, filter?: id from filter.list (a filter effect only: swaps its type, keeping position, blend and opacity; its current id edits it in place), level?, softness?, noise?, noiseScale?, invert?, mode?, sizes?, value?, image?: resource name (a fill's source), projection?: uv|triplanar|planar|spherical|cylindrical, scale?, rotation?, offset?, axis?, sharpness? (a fill effect's projection), anchor?, anchorChannel?, inLow?, inHigh?, gamma?, outLow?, outHigh?, tolerance?, colors?: [[r,g,b], ...] (a color selection's ID colors), filter parameters (see effect.add.filter)}",
             has_layer,
             set
         ),
@@ -296,6 +296,9 @@ fn add_fill(s: &mut Session, p: &Value) -> Result<Value> {
         let channel = channel_param("effect.add.fill", p, "anchorChannel")?.unwrap_or(Channel::Height);
         let source = anchor_source(s, "effect.add.fill", id, LayerId(a), channel)?;
         return push_effect(s, p, EffectKind::Fill { source, projection }, blend);
+    }
+    if let Some(name) = strp(p, "image") {
+        return push_effect(s, p, EffectKind::Fill { source: Source::image(name), projection }, blend);
     }
     let source = match strp(p, "procedural") {
         Some(k) => {
@@ -510,14 +513,19 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
             // The swapped filter was built with the parameters already
             EffectKind::Filter(_) if swaps_filter => {}
             EffectKind::Filter(filter) => crate::filter_lib::apply(params, filter, CMD)?,
-            EffectKind::Fill { source, .. } => {
+            EffectKind::Fill { source, projection } => {
                 if let Some(anchor) = anchor {
                     *source = anchor;
+                } else if let Some(name) = strp(params, "image") {
+                    *source = Source::image(name);
                 } else if let Some(value) = f32p(params, "value")
                     && matches!(source, Source::Uniform(_) | Source::Anchor { .. })
                 {
                     *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
                 }
+                // Projection params (projection kind and its transforms) keep the current values
+                // for any field not given, so this is a no-op when none are present.
+                *projection = projection_from(params, CMD, Some(&*projection))?;
             }
             EffectKind::ColorSelection { colors, tolerance } => crate::color_selection_cmds::apply_params(params, colors, tolerance)?,
             EffectKind::Compare { tolerance, .. } => {
