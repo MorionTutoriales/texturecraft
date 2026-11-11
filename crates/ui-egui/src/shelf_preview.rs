@@ -7,6 +7,7 @@ use egui::ColorImage;
 use texturecraft_engine::compose::ImageRes;
 use texturecraft_engine::core::ProceduralKind;
 use texturecraft_engine::materials;
+use texturecraft_engine::orb_preview::MAX_PREVIEW_SIZE_PX;
 use texturecraft_engine::paint::BrushSettings;
 use texturecraft_engine::paint::alphas::LibraryAlpha;
 use texturecraft_engine::paint::presets::BrushPreset;
@@ -44,6 +45,20 @@ impl ShelfPreview {
         match materials::find(id) {
             Some(found) if found.smart => ShelfPreview::SmartMaterial(id),
             Some(_) | None => ShelfPreview::Material(id),
+        }
+    }
+
+    /// The size to render at when `requested_px` is wanted: the previews rendered on the baked orb
+    /// stay within its camera's limit, which a high display scale would exceed
+    pub fn limited_size_px(&self, requested_px: usize) -> usize {
+        match self {
+            ShelfPreview::SmartMask(_) | ShelfPreview::SmartMaterial(_) | ShelfPreview::UserMaterial(_) => requested_px.clamp(1, MAX_PREVIEW_SIZE_PX),
+            ShelfPreview::Material(_)
+            | ShelfPreview::Filter(_)
+            | ShelfPreview::Procedural(_)
+            | ShelfPreview::Alpha(_)
+            | ShelfPreview::Brush(_)
+            | ShelfPreview::Image(..) => requested_px,
         }
     }
 
@@ -122,6 +137,20 @@ mod tests {
         let (steel, rust) = (ShelfPreview::UserMaterial("library/steel.tcmat".into()), ShelfPreview::UserMaterial("library/rust.tcmat".into()));
         assert_ne!(steel.key(), rust.key());
         assert_ne!(steel.key(), ShelfPreview::SmartMaterial("steel").key(), "a file never shares the key of a built-in material");
+    }
+
+    #[test]
+    fn previews_on_the_orb_stay_within_the_camera_limit_at_high_display_scales() {
+        // The hover preview asks for 256 points: 768 pixels at a 300 % display scale
+        let requested_px = MAX_PREVIEW_SIZE_PX * 3 / 2;
+        let on_the_orb =
+            [ShelfPreview::SmartMask("edges_sharp"), ShelfPreview::SmartMaterial("steel_painted_worn"), ShelfPreview::UserMaterial("steel.tcmat".into())];
+        for preview in on_the_orb {
+            assert_eq!(preview.limited_size_px(requested_px), MAX_PREVIEW_SIZE_PX, "{}", preview.key());
+            assert_eq!(preview.limited_size_px(0), 1, "{}", preview.key());
+        }
+
+        assert_eq!(ShelfPreview::Material("steel").limited_size_px(requested_px), requested_px, "previews drawn without the orb keep the size asked for");
     }
 
     #[test]

@@ -15,7 +15,6 @@ use texturecraft_engine::geom::glam::Vec2;
 #[cfg(not(target_arch = "wasm32"))]
 use texturecraft_engine::material_lib::SMART_MATERIAL_EXT;
 use texturecraft_engine::materials::MATERIALS;
-use texturecraft_engine::orb_preview::MAX_PREVIEW_SIZE_PX;
 use texturecraft_engine::paint::alphas;
 use texturecraft_engine::paint::presets::{BrushPreset, PRESETS};
 use texturecraft_engine::smart_masks::SMART_MASKS;
@@ -643,8 +642,7 @@ fn big_preview(ui: &Ui, thumbs: &mut Thumbs, preview: impl FnOnce() -> ShelfPrev
     let requested_size_px = (BIG_PREVIEW_SIZE * ctx.pixels_per_point()).round() as usize;
 
     // High display scales must respect the orb camera's allocation limit
-    let on_the_orb = matches!(&preview, ShelfPreview::SmartMask(_) | ShelfPreview::SmartMaterial(_));
-    let size_px = if on_the_orb { requested_size_px.clamp(1, MAX_PREVIEW_SIZE_PX) } else { requested_size_px };
+    let size_px = preview.limited_size_px(requested_size_px);
 
     // Scrolling moves tiles beneath a stationary pointer
     let idle_seconds = ui.input(|input| if input.is_scrolling() { 0.0 } else { input.pointer.time_since_last_movement().min(input.time_since_last_scroll()) });
