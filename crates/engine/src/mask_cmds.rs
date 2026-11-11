@@ -280,6 +280,16 @@ pub(crate) fn anchor_source(s: &Session, cmd: &str, reader: LayerId, anchor: Lay
     }
 }
 
+/// A source reading image resource `name`, which must be imported and decoded: the compositor
+/// would otherwise fill with a flat gray without saying why
+fn image_source(s: &Session, cmd: &str, name: &str) -> Result<Source> {
+    if !s.images.contains_key(name) {
+        return Err(bad(cmd, format!("no image resource `{name}` (import it first)")));
+    }
+
+    Ok(Source::image(name))
+}
+
 fn add_fill(s: &mut Session, p: &Value) -> Result<Value> {
     let projection = projection_from(p, "effect.add.fill", None)?;
     let blend = blend_param("effect.add.fill", p, "blend")?.unwrap_or(BlendMode::Normal);
@@ -298,7 +308,8 @@ fn add_fill(s: &mut Session, p: &Value) -> Result<Value> {
         return push_effect(s, p, EffectKind::Fill { source, projection }, blend);
     }
     if let Some(name) = strp(p, "image") {
-        return push_effect(s, p, EffectKind::Fill { source: Source::image(name), projection }, blend);
+        let source = image_source(s, "effect.add.fill", name)?;
+        return push_effect(s, p, EffectKind::Fill { source, projection }, blend);
     }
     let source = match strp(p, "procedural") {
         Some(k) => {
@@ -475,6 +486,12 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
         _ => None,
     };
 
+    // `image` points a fill at an imported image, checked before anything is edited
+    let image = match (strp(params, "image"), session.doc.project.effect(effect)) {
+        (Some(name), Some((_, Effect { kind: EffectKind::Fill { .. }, .. }))) => Some(image_source(session, CMD, name)?),
+        _ => None,
+    };
+
     // Naming the filter the effect already is edits its parameters like a plain effect.set
     let swapped = match strp(params, "filter") {
         Some(filter) if crate::filter_lib::find(filter).is_some_and(|def| current_filter_id(session, effect) == Some(def.id)) => None,
@@ -516,8 +533,8 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
             EffectKind::Fill { source, projection } => {
                 if let Some(anchor) = anchor {
                     *source = anchor;
-                } else if let Some(name) = strp(params, "image") {
-                    *source = Source::image(name);
+                } else if let Some(image) = image {
+                    *source = image;
                 } else if let Some(value) = f32p(params, "value")
                     && matches!(source, Source::Uniform(_) | Source::Anchor { .. })
                 {
