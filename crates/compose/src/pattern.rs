@@ -161,6 +161,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
 /// and two rows of tiles, a little taller than regular hexagons so that the pattern, tones
 /// included, repeats every unit.
 fn hexagon_tiles(p: Vec3, seed: u32) -> f32 {
+    let p = within_unit(p);
     const ROW: f32 = 1.732_050_8;
     // Regular hexagons of width 1 in (u, v), centers on two lattices offset by half a repeat
     let q = Vec2::new(p.x * 2.0, p.y * ROW);
@@ -184,6 +185,7 @@ fn hexagon_tiles(p: Vec3, seed: u32) -> f32 {
 /// V grows downwards in texture space, so the row with the largest V covers the others and each
 /// circle shows its top arcs. Repeats every unit.
 fn wave_scales(p: Vec3) -> f32 {
+    let p = within_unit(p);
     let row = (p.y * 4.0).floor() as i32;
     // Rows from the last one back: the first circle that reaches the point is the one on top
     for j in ((row - 2)..=(row + 2)).rev() {
@@ -210,6 +212,7 @@ fn wave_scales(p: Vec3) -> f32 {
 /// grain of its own. Six plank widths make a repeat, so the pattern, tones included, repeats
 /// every unit.
 fn herringbone_planks(p: Vec3, seed: u32) -> f32 {
+    let p = within_unit(p);
     const LENGTH: i32 = 3;
     const CELLS: i32 = 2 * LENGTH;
     let (x, y) = (p.x * CELLS as f32, p.y * CELLS as f32);
@@ -240,17 +243,41 @@ fn herringbone_planks(p: Vec3, seed: u32) -> f32 {
 fn halftone_dots(p: Vec3, seed: u32) -> f32 {
     // Even, so that the turned grid lines up again after one unit
     const DOTS: f32 = 16.0;
+    let p = within_unit(p);
     let q = Vec2::new(p.x, p.y) * DOTS;
 
-    // In (u, v) the turned grid is the integer grid; its points are √2 apart in q
-    let (u, v) = (((q.x + q.y) * 0.5).round(), ((q.x - q.y) * 0.5).round());
-    let center = Vec2::new(u + v, u - v);
-    let distance = (q - center).length();
+    // In (u, v) the turned grid is the integer grid; its points are √2 apart in q. The point lies
+    // in the square of four of them, and the dot that covers it most shows: there is no edge
+    // where the choice of dot jumps, so dots that meet stay continuous
+    const SMALLEST: f32 = 0.12;
+    const GROWTH: f32 = 0.6;
+    const EDGE: f32 = 0.05;
+    let (u, v) = ((q.x + q.y) * 0.5, (q.x - q.y) * 0.5);
+    let mut coverage = 0.0f32;
+    for (du, dv) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        let (cu, cv) = (u.floor() + du, v.floor() + dv);
+        let center = Vec2::new(cu + cv, cu - cv);
+        let distance = (q - center).length();
+        // Skips the tone, the costly part, where even the largest dot would not reach
+        if distance >= SMALLEST + GROWTH + EDGE {
+            continue;
+        }
 
-    // Stretched, as a sum of octaves gathers around the middle
-    let tone = smoothstep(0.25, 0.75, periodic_fbm(center / DOTS, seed));
-    let radius = 0.12 + 0.6 * tone;
-    1.0 - smoothstep(radius - 0.05, radius + 0.05, distance)
+        // Stretched, as a sum of octaves gathers around the middle
+        let tone = smoothstep(0.25, 0.75, periodic_fbm(center / DOTS, seed));
+        let radius = SMALLEST + GROWTH * tone;
+        coverage = coverage.max(1.0 - smoothstep(radius - EDGE, radius + EDGE, distance));
+    }
+
+    coverage
+}
+
+/// `p` moved by whole units into the unit square, for patterns that repeat every unit: their
+/// integer cell indices then stay small, and a large coordinate keeps its precision. A coordinate
+/// that is not finite becomes 0
+fn within_unit(p: Vec3) -> Vec3 {
+    let wrap = |x: f32| if x.is_finite() { x.rem_euclid(1.0) } else { 0.0 };
+    Vec3::new(wrap(p.x), wrap(p.y), p.z)
 }
 
 /// Smooth value noise in 0..1 on a lattice of `cells` × `cells` per unit, whose indices wrap, so
@@ -279,6 +306,7 @@ fn diamond_brocade(p: Vec3) -> f32 {
     use std::f32::consts::{PI, TAU};
 
     const DIAMONDS: f32 = 4.0;
+    let p = within_unit(p);
     let q = Vec2::new(p.x, p.y) * DIAMONDS;
     let local = q - q.floor() - Vec2::splat(0.5);
     // 0 at a diamond's center, 0.5 at its corners' edge
@@ -302,6 +330,7 @@ fn diamond_brocade(p: Vec3) -> f32 {
 /// cells into winding round tubes. The choice comes from the cell's index wrapped to the grid,
 /// so the pattern repeats every unit.
 fn truchet_arcs(p: Vec3, seed: u32) -> f32 {
+    let p = within_unit(p);
     const CELLS: i32 = 8;
     const TUBE: f32 = 0.13;
     let q = Vec2::new(p.x, p.y) * CELLS as f32;
@@ -556,6 +585,42 @@ mod tests {
                 for shift in [Vec3::X, Vec3::Y, Vec3::new(-2.0, 3.0, 0.0)] {
                     let (here, there) = (raw(kind, p, 7), raw(kind, p + shift, 7));
                     assert!((here - there).abs() < 2e-3, "{kind:?}: {here} at {p}, {there} at {}", p + shift);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn geometric_tilings_take_extreme_coordinates() {
+        let tilings = [
+            ProceduralKind::HexagonTiles,
+            ProceduralKind::WaveScales,
+            ProceduralKind::HerringbonePlanks,
+            ProceduralKind::HalftoneDots,
+            ProceduralKind::DiamondBrocade,
+            ProceduralKind::TruchetArcs,
+        ];
+        let extremes = [0.0, 5.4e8, -5.4e8, f32::MAX, -f32::MAX, f32::INFINITY, f32::NAN];
+        for kind in tilings {
+            for x in extremes {
+                for y in extremes {
+                    let value = raw(kind, Vec3::new(x, y, 0.0), 7);
+                    assert!((0.0..=1.0).contains(&value), "{kind:?} at ({x}, {y}): {value}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn halftone_dots_stay_continuous_where_neighbouring_dots_meet() {
+        // Halfway between two dot centers lie the points 1/32 apart on the turned grid
+        for seed in 0..32 {
+            for k in 0..64 {
+                let tie = Vec3::new(k as f32 / 32.0, (k * 7 % 32) as f32 / 32.0, 0.0);
+                for step in [Vec3::X, Vec3::Y] {
+                    let (before, after) =
+                        (raw(ProceduralKind::HalftoneDots, tie - step * 1e-4, seed), raw(ProceduralKind::HalftoneDots, tie + step * 1e-4, seed));
+                    assert!((before - after).abs() < 0.05, "seed {seed}, {tie}: {before} then {after}");
                 }
             }
         }
