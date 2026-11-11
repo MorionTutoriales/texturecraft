@@ -1068,15 +1068,16 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
     });
 }
 
-/// Menu listing the image resources with a name filter and thumbnails, then Import...: the image
-/// picked, if any.
+/// Menu listing the decoded image resources with a name filter and thumbnails, then Import...: the
+/// image picked, if any. A resource that did not decode is not offered, as the commands that take
+/// an image refuse it.
 fn image_menu(app: &mut TextureCraftApp, ui: &mut Ui) -> Option<String> {
     ui.label(caption(tr("Images")));
     let ctx = ui.ctx().clone();
     // A name filter atop the list, kept across frames while the menu stays open.
     let search_id = ui.make_persistent_id("image_search");
     let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
-    if !app.session.doc.resources.is_empty() {
+    if !app.session.images.is_empty() {
         ui.add(egui::TextEdit::singleline(&mut search).hint_text(tr("Search")).desired_width(f32::INFINITY));
     }
     let query = search.trim().to_lowercase();
@@ -1088,7 +1089,7 @@ fn image_menu(app: &mut TextureCraftApp, ui: &mut Ui) -> Option<String> {
         .doc
         .resources
         .keys()
-        .filter(|name| query.is_empty() || name.to_lowercase().contains(&query))
+        .filter(|name| app.session.images.contains_key(name.as_str()) && (query.is_empty() || name.to_lowercase().contains(&query)))
         .cloned()
         .collect::<Vec<_>>()
         .into_iter()
