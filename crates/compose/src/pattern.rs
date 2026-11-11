@@ -151,6 +151,9 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
         ProceduralKind::HexagonTiles => hexagon_tiles(p, seed),
         ProceduralKind::WaveScales => wave_scales(p),
         ProceduralKind::HerringbonePlanks => herringbone_planks(p, seed),
+        ProceduralKind::HalftoneDots => halftone_dots(p, seed),
+        ProceduralKind::DiamondBrocade => diamond_brocade(p),
+        ProceduralKind::TruchetArcs => truchet_arcs(p, seed),
     }
 }
 
@@ -229,6 +232,90 @@ fn herringbone_planks(p: Vec3, seed: u32) -> f32 {
     let tone = noise::cell_hash(plank.0.rem_euclid(CELLS), plank.1.rem_euclid(CELLS), plank.2, seed);
     let grain = noise::value([along * 3.0, across * 28.0, tone * 31.0], seed ^ 0x7B);
     body * (0.55 + 0.25 * tone + 0.2 * grain)
+}
+
+/// A halftone screen: bright dots on a grid turned 45 degrees, sixteen dots apart per unit, sized
+/// by a cloudy tone. Each dot keeps the tone at its center and the tone repeats every unit, so the
+/// pattern does too.
+fn halftone_dots(p: Vec3, seed: u32) -> f32 {
+    // Even, so that the turned grid lines up again after one unit
+    const DOTS: f32 = 16.0;
+    let q = Vec2::new(p.x, p.y) * DOTS;
+
+    // In (u, v) the turned grid is the integer grid; its points are √2 apart in q
+    let (u, v) = (((q.x + q.y) * 0.5).round(), ((q.x - q.y) * 0.5).round());
+    let center = Vec2::new(u + v, u - v);
+    let distance = (q - center).length();
+
+    // Stretched, as a sum of octaves gathers around the middle
+    let tone = smoothstep(0.25, 0.75, periodic_fbm(center / DOTS, seed));
+    let radius = 0.12 + 0.6 * tone;
+    1.0 - smoothstep(radius - 0.05, radius + 0.05, distance)
+}
+
+/// Smooth value noise in 0..1 on a lattice of `cells` × `cells` per unit, whose indices wrap, so
+/// the noise repeats every unit
+fn periodic_value_noise(at: Vec2, cells: i32, seed: u32) -> f32 {
+    let q = at * cells as f32;
+    let (i, j) = (q.x.floor() as i32, q.y.floor() as i32);
+    let f = q - Vec2::new(i as f32, j as f32);
+    let s = f * f * (Vec2::splat(3.0) - 2.0 * f);
+    let corner = |di: i32, dj: i32| noise::cell_hash((i + di).rem_euclid(cells), (j + dj).rem_euclid(cells), 0, seed);
+    let top = corner(0, 0) + (corner(1, 0) - corner(0, 0)) * s.x;
+    let bottom = corner(0, 1) + (corner(1, 1) - corner(0, 1)) * s.x;
+    top + (bottom - top) * s.y
+}
+
+/// Fractal value noise in 0..1 that repeats every unit: octaves of [`periodic_value_noise`] with
+/// a whole number of cells per unit each
+fn periodic_fbm(at: Vec2, seed: u32) -> f32 {
+    const OCTAVES: [(i32, f32); 3] = [(3, 0.55), (6, 0.3), (12, 0.15)];
+    OCTAVES.iter().enumerate().map(|(k, (cells, weight))| weight * periodic_value_noise(at, *cells, seed ^ (k as u32 * 0x9E37))).sum()
+}
+
+/// Raised diamonds on a twill ground, four by four per unit. Each diamond is a set of concentric
+/// rings with a dark border; the ground shows fine diagonal ribs. Repeats every unit.
+fn diamond_brocade(p: Vec3) -> f32 {
+    use std::f32::consts::{PI, TAU};
+
+    const DIAMONDS: f32 = 4.0;
+    let q = Vec2::new(p.x, p.y) * DIAMONDS;
+    let local = q - q.floor() - Vec2::splat(0.5);
+    // 0 at a diamond's center, 0.5 at its corners' edge
+    let d = local.x.abs() + local.y.abs();
+
+    // The twill ground: fine diagonal ribs, a whole number of them per unit
+    let ribs = 0.5 + 0.5 * (TAU * 40.0 * (q.x + q.y) / DIAMONDS).sin();
+    let ground = 0.22 + 0.12 * ribs;
+
+    // The motif, rising towards the middle in rings, nearly filling its cell
+    const MOTIF: f32 = 0.46;
+    let inside = 1.0 - smoothstep(MOTIF - 0.03, MOTIF, d);
+    let rings = 0.5 + 0.5 * (TAU * 2.5 * d / MOTIF).cos();
+    let rise = (PI * 0.5 * (1.0 - d / MOTIF)).sin().max(0.0);
+    let motif = (0.45 + 0.35 * rise + 0.2 * rings) * (0.9 + 0.1 * ribs);
+    (ground + (motif - ground) * inside).clamp(0.0, 1.0)
+}
+
+/// Truchet tiles: in each of eight by eight cells per unit, two quarter-circle arcs join the
+/// middles of its sides, around one pair of opposite corners or the other. The arcs meet across
+/// cells into winding round tubes. The choice comes from the cell's index wrapped to the grid,
+/// so the pattern repeats every unit.
+fn truchet_arcs(p: Vec3, seed: u32) -> f32 {
+    const CELLS: i32 = 8;
+    const TUBE: f32 = 0.13;
+    let q = Vec2::new(p.x, p.y) * CELLS as f32;
+    let (i, j) = (q.x.floor() as i32, q.y.floor() as i32);
+    let local = q - Vec2::new(i as f32, j as f32);
+
+    // Around the top-left and bottom-right corners, or the top-right and bottom-left ones
+    let flipped = noise::cell_hash(i.rem_euclid(CELLS), j.rem_euclid(CELLS), 0, seed) > 0.5;
+    let corners = if flipped { [Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)] } else { [Vec2::ZERO, Vec2::ONE] };
+    let offset = corners.iter().map(|corner| ((local - *corner).length() - 0.5).abs()).fold(f32::MAX, f32::min);
+
+    // A round tube across, over a dark ground
+    let s = (offset / TUBE).min(1.0);
+    0.05 + 0.9 * (1.0 - s * s).sqrt()
 }
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -455,7 +542,15 @@ mod tests {
     fn geometric_tilings_repeat_every_unit() {
         // Shifted points round differently, which shows on the steep edges of a joint, so a seam
         // is anything above that rounding
-        for kind in [ProceduralKind::HexagonTiles, ProceduralKind::WaveScales, ProceduralKind::HerringbonePlanks] {
+        let tilings = [
+            ProceduralKind::HexagonTiles,
+            ProceduralKind::WaveScales,
+            ProceduralKind::HerringbonePlanks,
+            ProceduralKind::HalftoneDots,
+            ProceduralKind::DiamondBrocade,
+            ProceduralKind::TruchetArcs,
+        ];
+        for kind in tilings {
             for i in 0..400 {
                 let p = Vec3::new((i as f32 * 0.137).fract() * 3.0 - 1.0, (i as f32 * 0.071).fract() * 3.0 - 1.0, 0.0);
                 for shift in [Vec3::X, Vec3::Y, Vec3::new(-2.0, 3.0, 0.0)] {
