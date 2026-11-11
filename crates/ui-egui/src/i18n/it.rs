@@ -401,6 +401,8 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Height offset", "Offset altezza"),
     ("Height to normal strength", "Intensità altezza in normale"),
     ("Help", "Aiuto"),
+    ("Herringbone planks", "Listoni a spina di pesce"),
+    ("Hexagon tiles", "Piastrelle esagonali"),
     ("Hide UI", "Nascondi interfaccia"),
     ("High", "Alto"),
     ("High poly: {name}", "High poly: {name}"),
@@ -866,6 +868,7 @@ pub const TABLE: &[(&str, &str)] = &[
     ("Voronoi", "Voronoi"),
     ("Warp", "Deformazione"),
     ("Warp Directional", "Deformazione direzionale"),
+    ("Wave scales", "Scaglie a onde"),
     ("Wavefront OBJ with MTL, textures alongside", "Wavefront OBJ con MTL, texture accanto"),
     (
         "WebGPU isn't available in this browser, so TextureCraft runs on WebGL2: Rendering mode path traces on the CPU (slower) and large texture sets show at reduced resolution. A current Chrome, Edge or Safari has WebGPU.",

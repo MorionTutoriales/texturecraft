@@ -148,7 +148,87 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             let n = noise::fbm(a, 5, seed, noise::perlin) + (f1 - 0.5) * 0.25;
             smoothstep(0.55, 0.58, n)
         }
+        ProceduralKind::HexagonTiles => hexagon_tiles(p, seed),
+        ProceduralKind::WaveScales => wave_scales(p),
+        ProceduralKind::HerringbonePlanks => herringbone_planks(p, seed),
     }
+}
+
+/// Hexagon tiles with joints (0 = joint), each with a tone of its own. A unit holds two columns
+/// and two rows of tiles, a little taller than regular hexagons so that the pattern, tones
+/// included, repeats every unit.
+fn hexagon_tiles(p: Vec3, seed: u32) -> f32 {
+    const ROW: f32 = 1.732_050_8;
+    // Regular hexagons of width 1 in (u, v), centers on two lattices offset by half a repeat
+    let q = Vec2::new(p.x * 2.0, p.y * ROW);
+    let repeat = Vec2::new(1.0, ROW);
+    let wrap = |q: Vec2| q - repeat * (q / repeat).round();
+    let (a, b) = (wrap(q), wrap(q - repeat * 0.5));
+    let local = if a.length_squared() < b.length_squared() { a } else { b };
+
+    // Distance to the nearest edge: the apothem is 0.5 and the edge normals sit at 0, 60 and 120 degrees
+    let reach = local.x.abs().max((local.x * 0.5 + local.y * 0.866_025_4).abs()).max((local.x * 0.5 - local.y * 0.866_025_4).abs());
+    let joint = smoothstep(0.012, 0.045, 0.5 - reach);
+
+    // Tile centers sit on a half-repeat grid: four columns and two rows of them per unit
+    let center = q - local;
+    let (column, row) = ((center.x * 2.0).round() as i32, (center.y / ROW * 2.0).round() as i32);
+    let tone = noise::cell_hash(column.rem_euclid(4), row.rem_euclid(2), 0, seed);
+    joint * (0.8 + 0.2 * tone)
+}
+
+/// Rows of circles of radius 0.5, a quarter unit apart, every other row shifted half a circle.
+/// V grows downwards in texture space, so the row with the largest V covers the others and each
+/// circle shows its top arcs. Repeats every unit.
+fn wave_scales(p: Vec3) -> f32 {
+    let row = (p.y * 4.0).floor() as i32;
+    // Rows from the last one back: the first circle that reaches the point is the one on top
+    for j in ((row - 2)..=(row + 2)).rev() {
+        let dy = p.y - j as f32 * 0.25;
+        if dy.abs() > 0.5 {
+            continue;
+        }
+
+        let shift = if j.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
+        let dx = p.x - ((p.x - shift).round() + shift);
+        let t = (dx * dx + dy * dy).sqrt() / 0.5;
+        if t <= 1.0 {
+            // Concentric arcs, brighter towards the middle, with a dark rim where the next circle begins
+            let arcs = 0.5 + 0.5 * (std::f32::consts::TAU * 3.5 * t).cos();
+            let rim = 1.0 - 0.7 * smoothstep(0.9, 1.0, t);
+            return ((0.3 + 0.7 * arcs) * rim).clamp(0.0, 1.0);
+        }
+    }
+
+    0.0
+}
+
+/// Herringbone planks three times as long as wide, with gaps (0 = gap), each with a tone and a
+/// grain of its own. Six plank widths make a repeat, so the pattern, tones included, repeats
+/// every unit.
+fn herringbone_planks(p: Vec3, seed: u32) -> f32 {
+    const LENGTH: i32 = 3;
+    const CELLS: i32 = 2 * LENGTH;
+    let (x, y) = (p.x * CELLS as f32, p.y * CELLS as f32);
+    let (i, j) = (x.floor() as i32, y.floor() as i32);
+    let (fx, fy) = (x - i as f32, y - j as f32);
+
+    // Along the diagonal the planks alternate: LENGTH cells of horizontal plank, then LENGTH of vertical
+    let phase = (i - j).rem_euclid(CELLS);
+    let (along, across, plank) = if phase < LENGTH {
+        (phase as f32 + fx, fy, (i - phase, j, 0))
+    } else {
+        let step = CELLS - 1 - phase;
+        (step as f32 + fy, fx, (i, j - step, 1))
+    };
+    let along = along / LENGTH as f32;
+
+    // Distance to the plank's border, in plank widths
+    let edge = across.min(1.0 - across).min(along.min(1.0 - along) * LENGTH as f32);
+    let body = smoothstep(0.015, 0.06, edge);
+    let tone = noise::cell_hash(plank.0.rem_euclid(CELLS), plank.1.rem_euclid(CELLS), plank.2, seed);
+    let grain = noise::value([along * 3.0, across * 28.0, tone * 31.0], seed ^ 0x7B);
+    body * (0.55 + 0.25 * tone + 0.2 * grain)
 }
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -369,6 +449,34 @@ mod tests {
         }
         // A plain weave shows every top thread alike.
         assert!((0..8).all(|x| at(ProceduralKind::Weave, x, 0) > 0.7));
+    }
+
+    #[test]
+    fn geometric_tilings_repeat_every_unit() {
+        // Shifted points round differently, which shows on the steep edges of a joint, so a seam
+        // is anything above that rounding
+        for kind in [ProceduralKind::HexagonTiles, ProceduralKind::WaveScales, ProceduralKind::HerringbonePlanks] {
+            for i in 0..400 {
+                let p = Vec3::new((i as f32 * 0.137).fract() * 3.0 - 1.0, (i as f32 * 0.071).fract() * 3.0 - 1.0, 0.0);
+                for shift in [Vec3::X, Vec3::Y, Vec3::new(-2.0, 3.0, 0.0)] {
+                    let (here, there) = (raw(kind, p, 7), raw(kind, p + shift, 7));
+                    assert!((here - there).abs() < 2e-3, "{kind:?}: {here} at {p}, {there} at {}", p + shift);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hexagon_tiles_and_herringbone_planks_have_joints_between_them() {
+        let at = |kind, x: f32, y: f32| raw(kind, Vec3::new(x, y, 0.0), 7);
+
+        // A tile is centered at the origin and its right edge is a quarter unit away
+        assert!(at(ProceduralKind::HexagonTiles, 0.0, 0.0) >= 0.8);
+        assert!(at(ProceduralKind::HexagonTiles, 0.25, 0.0) < 0.05);
+
+        // A unit is six plank widths: a horizontal plank starts at the origin, its middle is a plank and a half to the right
+        assert!(at(ProceduralKind::HerringbonePlanks, 0.000_2, 0.5 / 6.0) < 0.05);
+        assert!(at(ProceduralKind::HerringbonePlanks, 1.5 / 6.0, 0.5 / 6.0) >= 0.55);
     }
 
     #[test]

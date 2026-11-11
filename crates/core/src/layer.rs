@@ -254,10 +254,16 @@ pub enum ProceduralKind {
     Pores,
     /// Sharp-edged paint chips.
     Chips,
+    /// Hexagon tiles with joints (0 = joint).
+    HexagonTiles,
+    /// Rows of overlapping fan-shaped waves, each a set of concentric arcs.
+    WaveScales,
+    /// Herringbone planks with gaps and grain (0 = gap).
+    HerringbonePlanks,
 }
 
 impl ProceduralKind {
-    pub const ALL: [ProceduralKind; 23] = [
+    pub const ALL: [ProceduralKind; 26] = [
         ProceduralKind::Clouds,
         ProceduralKind::Perlin,
         ProceduralKind::Noise,
@@ -281,6 +287,9 @@ impl ProceduralKind {
         ProceduralKind::Smudges,
         ProceduralKind::Pores,
         ProceduralKind::Chips,
+        ProceduralKind::HexagonTiles,
+        ProceduralKind::WaveScales,
+        ProceduralKind::HerringbonePlanks,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -307,6 +316,9 @@ impl ProceduralKind {
             ProceduralKind::Smudges => "Fingerprints",
             ProceduralKind::Pores => "Pores",
             ProceduralKind::Chips => "Paint chips",
+            ProceduralKind::HexagonTiles => "Hexagon tiles",
+            ProceduralKind::WaveScales => "Wave scales",
+            ProceduralKind::HerringbonePlanks => "Herringbone planks",
         }
     }
     pub fn parse(s: &str) -> Option<ProceduralKind> {
