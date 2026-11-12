@@ -539,7 +539,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
                 } else if let Some(image) = image {
                     *source = image;
                 } else if let Some(value) = f32p(params, "value")
-                    && matches!(source, Source::Uniform(_) | Source::Anchor { .. })
+                    && matches!(source, Source::Uniform(_) | Source::Anchor { .. } | Source::Image { .. })
                 {
                     *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
                 }

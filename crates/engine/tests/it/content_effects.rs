@@ -340,4 +340,8 @@ fn mask_fill_can_use_an_image_source() {
     assert_eq!(mask_effects(&s), effects_before, "the failed add leaves the mask as it was");
     assert!(execute(&mut s, "effect.set", &json!({"effect": fill, "image": "nope.png"})).is_err());
     assert!(matches!(fill_source(&s, fill), Source::Image { name, .. } if *name == wood), "the failed edit leaves the source as it was");
+
+    // The Source menu's "Uniform value" sends `value`, which takes the fill back from an image
+    execute(&mut s, "effect.set", &json!({"effect": fill, "value": 0.25})).unwrap();
+    assert!(matches!(fill_source(&s, fill), Source::Uniform(v) if (v[0] - 0.25).abs() < 1e-6), "{:?}", fill_source(&s, fill));
 }
