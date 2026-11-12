@@ -118,6 +118,22 @@ fn glb_two_materials_mirrored_node() {
     m.validate().unwrap();
 }
 
+/// A scene without a `nodes` array is legal glTF (Blender writes one for a scene with no exported
+/// objects); it must not stop the default scene from importing.
+#[test]
+fn gltf_scene_without_nodes_imports_the_default_scene() {
+    let mut json: serde_json::Value = serde_json::from_slice(&embedded_gltf()).unwrap();
+    json["scenes"] = serde_json::json!([{ "name": "EmptyReviewScene" }, { "nodes": [0] }]);
+    json["scene"] = 1.into();
+    let im = import_mesh_bytes("scene.gltf", &serde_json::to_vec(&json).unwrap()).unwrap();
+    assert_eq!(im.report.triangles, 2);
+    // Only an empty scene: nothing to import, but a clear error rather than a parse failure.
+    json["scenes"] = serde_json::json!([{ "name": "EmptyReviewScene" }]);
+    json["scene"] = 0.into();
+    let err = import_mesh_bytes("scene.gltf", &serde_json::to_vec(&json).unwrap()).unwrap_err();
+    assert!(!err.to_string().contains("missing field"), "{err}");
+}
+
 #[test]
 fn gltf_embedded_buffers_and_missing_attributes() {
     let im = import_mesh_bytes("scene.gltf", &embedded_gltf()).unwrap();
