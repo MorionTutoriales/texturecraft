@@ -180,8 +180,11 @@ impl GpuLink {
         let pending = session.pending_tiles();
         self.composite_total = if pending == 0 { 0 } else { self.composite_total.max(pending) };
         let prioritize = scene_view && pending >= 32 && !session.stroke_active();
-        if prioritize {
-            self.visible.refresh(session);
+        let uploads_pending = session.caches.iter().any(|cache| !cache.upload.is_empty());
+        let use_hint = scene_view && !session.stroke_active() && (prioritize || uploads_pending);
+        if use_hint {
+            let deadline = crate::now_ms() + time_left_ms(0).clamp(0.0, 1.0);
+            self.visible.refresh(session, || crate::now_ms() >= deadline);
         }
         session.update_with_visible(COMPOSITE_BUDGET_MS.min(time_left_ms(0)).max(MIN_SLICE_MS), crate::now_ms, prioritize.then_some(&self.visible));
 
@@ -224,7 +227,7 @@ impl GpuLink {
 
         for texture_set in 0..session.caches.len() {
             let mut tiles = session.take_uploads(texture_set);
-            if scene_view && self.visible.view_matches(session) {
+            if use_hint {
                 tiles.sort_by_key(|tile| !self.visible.contains(texture_set, tile));
             }
             if tiles.is_empty() {
