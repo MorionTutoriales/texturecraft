@@ -706,3 +706,28 @@ fn tiles_the_cache_drops_during_a_kept_run_are_filtered_again() {
     assert!(above.len() > bottom.len());
     assert!(out == want, "a tile dropped from the cache was composited with fields that lack the layers off the hot path");
 }
+
+/// A stroke that starts while fields are kept must not leave them allocated for as long as it lasts, even though tiles still follow.
+#[test]
+fn a_live_stroke_releases_the_fields_kept_before_it_started() {
+    let mut f = fixture();
+    let top = heavy_stack(&mut f);
+    let all = all_tiles(RES, RES);
+    let (first, rest) = all.split_at(3);
+    let mut cache = BelowCache::default();
+    cache.set_hot(Some(top));
+
+    cache.ahead = rest.to_vec();
+    run(&f, 0, first, Some(&mut cache));
+    assert!(cache.holds_fields());
+
+    // The stroke begins with tiles still following: the pass is not over, so nothing else would clear them
+    let preview = stroke(top);
+    let mut live = run_with(&f, 0, first, Some(&mut cache), Some(&preview));
+    assert!(!cache.holds_fields(), "fields kept before the stroke stay allocated while it lasts");
+    let (images, baked) = (Default::default(), Default::default());
+    let mut inp = inputs(&f, 0, &images, &baked);
+    inp.preview = Some(&preview);
+    composite_tiles_cached(&inp, &mut live, rest, Some(&mut cache));
+    assert!(live == run_with(&f, 0, &all, None, Some(&preview)), "a stroke that starts during a sliced pass differs");
+}

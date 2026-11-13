@@ -1700,6 +1700,12 @@ pub fn composite_tiles_cached(inp: &Inputs, out: &mut Composite, tiles: &[(u32, 
     let holds = below.is_some() && inp.preview.is_none() && has_neighbourhood(inp, &set.stack);
     let key = if holds { StackKey::new(inp.project, inp.pixels, inp.baked, inp.images, inp.ts, &set.stack).map(Arc::new) } else { None };
     let size = (inp.gbuf.width, inp.gbuf.height);
+    // Fields kept before a stroke began are not used under it, nor held while it lasts
+    if key.is_none()
+        && let Some(cache) = below.as_deref_mut()
+    {
+        cache.held = None;
+    }
     for (at, block) in &blocks {
         let lacks = |tile: &(u32, u32)| below.as_deref().zip(split.as_deref()).is_none_or(|(cache, _)| cache.tile(*tile).is_none());
         let fresh: Vec<(u32, u32)> = block.iter().copied().filter(lacks).collect();
