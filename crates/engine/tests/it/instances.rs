@@ -312,6 +312,85 @@ fn visible_tiles_are_processed_before_hidden_tiles() {
     assert_eq!(s.pending_tiles(), 0);
 }
 
+/// A stack whose mask and content both read their neighbours, so reordering tiles could change pixels if it went wrong.
+fn filtered_stack(s: &mut Session) {
+    execute(s, "textureSet.resolution", &json!({"ts": 0, "resolution": 1024})).unwrap();
+    execute(s, "layer.add.fill", &Value::Null).unwrap();
+    execute(s, "layer.fill.set", &json!({"channel": "baseColor", "procedural": "grunge"})).unwrap();
+    execute(s, "effect.add.filter", &json!({"target": "content", "filter": "blur", "radius": 6})).unwrap();
+    execute(s, "mask.add.black", &Value::Null).unwrap();
+    execute(s, "effect.add.generator", &json!({"generator": "position"})).unwrap();
+    execute(s, "effect.add.filter", &json!({"filter": "blur", "radius": 30})).unwrap();
+    s.update();
+}
+
+#[test]
+fn hinted_budgeted_updates_end_identical_to_a_full_update() {
+    let mut s = session();
+    filtered_stack(&mut s);
+    let full: Vec<_> = s.caches.iter().map(|cache| cache.composite.clone()).collect();
+    for cache in &mut s.caches {
+        cache.invalidate_all();
+    }
+    let mut hint = texturecraft_engine::session::VisibleTiles::default();
+    let mut calls = 0;
+    while s.pending_tiles() > 0 {
+        hint.refresh(&s, || false);
+        for cache in &mut s.caches {
+            cache.chunk = 3;
+        }
+        // A clock that is always over budget: one small chunk per set per call
+        s.update_with_visible(0.0, || 1.0, Some(&hint));
+        calls += 1;
+        if calls == 3 {
+            s.camera.yaw += 150.0;
+        }
+        assert!(calls < 10_000, "the pass drains");
+    }
+    assert!(calls > 3, "the work was spread over calls and over a camera turn");
+    for (ts, cache) in s.caches.iter().enumerate() {
+        assert!(cache.composite == full[ts], "texture set {ts}: hinted chunked compositing gives the same pixels");
+    }
+}
+
+#[test]
+fn newly_visible_tiles_go_first_after_a_camera_turn() {
+    let mut s = session();
+    execute(&mut s, "textureSet.resolution", &json!({"ts": 0, "resolution": 1024})).unwrap();
+    let mut hint = texturecraft_engine::session::VisibleTiles::default();
+    hint.refresh(&s, || false);
+    for cache in &mut s.caches {
+        cache.invalidate_all();
+    }
+    // Finish what the first view shows
+    while s.caches.iter().enumerate().any(|(ts, cache)| cache.dirty.iter().any(|tile| hint.contains(ts, tile))) {
+        for cache in &mut s.caches {
+            cache.chunk = 1;
+        }
+        s.update_with_visible(0.0, || 1.0, Some(&hint));
+    }
+    // Turn to the far side and let the sampler finish its passes
+    s.camera.yaw += 180.0;
+    for _ in 0..20 {
+        hint.refresh(&s, || false);
+    }
+    assert!(hint.view_matches(&s));
+    let dirty_in_view = |s: &Session, hint: &texturecraft_engine::session::VisibleTiles| -> usize {
+        s.caches.iter().enumerate().map(|(ts, cache)| cache.dirty.iter().filter(|tile| hint.contains(ts, tile)).count()).sum()
+    };
+    let fresh = dirty_in_view(&s, &hint);
+    let elsewhere = s.pending_tiles() - fresh;
+    assert!(fresh > 0 && elsewhere > 0, "the far side has tiles of its own and others wait");
+    for _ in 0..fresh {
+        for cache in &mut s.caches {
+            cache.chunk = 1;
+        }
+        s.update_with_visible(0.0, || 1.0, Some(&hint));
+    }
+    assert_eq!(dirty_in_view(&s, &hint), 0, "everything the new view shows is composited first");
+    assert_eq!(s.pending_tiles(), elsewhere, "tiles outside the new view were not touched while those waited");
+}
+
 #[test]
 fn hiding_the_front_material_reveals_the_tiles_behind_it() {
     let mut mesh = primitives::plane(2.0, 1);

@@ -901,14 +901,18 @@ impl Session {
                     cache.dirty.extend(next_chunk(&mut cache.settle, chunk.min(initial_chunk_size)));
                 }
                 let chunk_started = clock();
+                // The tiles that follow this chunk in its own order: the ones a neighbourhood filter looks ahead over
+                let mut upcoming = None;
                 let tiles = if let Some(preferred) = priority {
-                    let selected: Vec<_> = preferred.intersection(&cache.dirty).copied().take(chunk).collect();
-                    if selected.is_empty() {
+                    let mut wanted: BTreeSet<(u32, u32)> = preferred.intersection(&cache.dirty).copied().collect();
+                    if wanted.is_empty() {
                         break;
                     }
+                    let selected = next_chunk(&mut wanted, chunk);
                     for tile in &selected {
                         cache.dirty.remove(tile);
                     }
+                    upcoming = Some(wanted);
                     selected
                 } else {
                     next_chunk(&mut cache.dirty, chunk)
@@ -932,7 +936,7 @@ impl Session {
                 };
 
                 // Look ahead so sliced updates filter a run of tiles once
-                cache.below.ahead = if budget_ms.is_finite() { tiles_ahead(&cache.dirty, &tiles) } else { Vec::new() };
+                cache.below.ahead = if budget_ms.is_finite() { tiles_ahead(upcoming.as_ref().unwrap_or(&cache.dirty), &tiles) } else { Vec::new() };
                 texturecraft_compose::composite_tiles_cached(&inputs, &mut cache.composite, &tiles, Some(&mut cache.below));
 
                 // The composited tiles and the neighbours their padding reached change
