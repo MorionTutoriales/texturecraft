@@ -313,25 +313,35 @@ fn visible_tiles_are_processed_before_hidden_tiles() {
 }
 
 /// A stack whose mask and content both read their neighbours, so reordering tiles could change pixels if it went wrong.
-fn filtered_stack(s: &mut Session) {
+fn filtered_stack(s: &mut Session) -> Value {
     execute(s, "textureSet.resolution", &json!({"ts": 0, "resolution": 1024})).unwrap();
-    execute(s, "layer.add.fill", &Value::Null).unwrap();
+    let layer = execute(s, "layer.add.fill", &Value::Null).unwrap()["layer"].clone();
     execute(s, "layer.fill.set", &json!({"channel": "baseColor", "procedural": "grunge"})).unwrap();
     execute(s, "effect.add.filter", &json!({"target": "content", "filter": "blur", "radius": 6})).unwrap();
     execute(s, "mask.add.black", &Value::Null).unwrap();
     execute(s, "effect.add.generator", &json!({"generator": "position"})).unwrap();
     execute(s, "effect.add.filter", &json!({"filter": "blur", "radius": 30})).unwrap();
     s.update();
+    layer
 }
 
 #[test]
 fn hinted_budgeted_updates_end_identical_to_a_full_update() {
+    // The same edit, once finished by a full update and once by hinted slices that start from the old pixels
+    let edit = |s: &mut Session, layer: &Value| {
+        execute(s, "layer.fill.set", &json!({"layer": layer, "channel": "baseColor", "procedural": "clouds"})).unwrap();
+    };
+    let mut reference = session();
+    let layer = filtered_stack(&mut reference);
+    edit(&mut reference, &layer);
+    reference.update();
+
     let mut s = session();
-    filtered_stack(&mut s);
-    let full: Vec<_> = s.caches.iter().map(|cache| cache.composite.clone()).collect();
-    for cache in &mut s.caches {
-        cache.invalidate_all();
-    }
+    let layer = filtered_stack(&mut s);
+    edit(&mut s, &layer);
+    assert!(s.pending_tiles() > 0);
+    assert!(s.caches[0].composite != reference.caches[0].composite, "the edit changes the output, so the old pixels are stale");
+
     let mut hint = texturecraft_engine::session::VisibleTiles::default();
     let mut calls = 0;
     while s.pending_tiles() > 0 {
@@ -349,7 +359,7 @@ fn hinted_budgeted_updates_end_identical_to_a_full_update() {
     }
     assert!(calls > 3, "the work was spread over calls and over a camera turn");
     for (ts, cache) in s.caches.iter().enumerate() {
-        assert!(cache.composite == full[ts], "texture set {ts}: hinted chunked compositing gives the same pixels");
+        assert!(cache.composite == reference.caches[ts].composite, "texture set {ts}: hinted chunked compositing gives the pixels of a full update");
     }
 }
 
