@@ -63,6 +63,9 @@ pub struct Thumbs {
     /// Each user smart material file as the last library scan found it
     #[cfg(not(target_arch = "wasm32"))]
     user_material_versions: HashMap<std::path::PathBuf, FileVersion>,
+    /// How many times a library scan has dropped each user smart material's previews; part of its worker keys, so a result
+    /// still in flight for the old file cannot fill the request that replaced it
+    user_material_generations: HashMap<std::path::PathBuf, u64>,
 }
 
 /// A file's modified time and size, which change when it is saved again
@@ -259,10 +262,13 @@ impl Thumbs {
         let outdated: Vec<std::path::PathBuf> =
             self.user_material_versions.iter().filter(|(file, version)| versions.get(*file) != Some(*version)).map(|(file, _)| file.clone()).collect();
         for file in outdated {
-            // Worker keys are the preview key and a size: `key@size`
+            *self.user_material_generations.entry(file.clone()).or_insert(0) += 1;
+
+            // Worker keys are the preview key, a size and a generation: `key@size#generation`
             let key = ShelfPreview::UserMaterial(file).key();
             let is_outdated = |worker_key: &String| {
-                let size = worker_key.strip_prefix(&key).and_then(|rest| rest.strip_prefix('@'));
+                let size =
+                    worker_key.strip_prefix(&key).and_then(|rest| rest.strip_prefix('@')).map(|rest| rest.split_once('#').map_or(rest, |(size, _)| size));
                 size.is_some_and(|size| size.bytes().all(|digit| digit.is_ascii_digit()))
             };
             self.rendered.retain(|worker_key, _| !is_outdated(worker_key));
@@ -348,14 +354,16 @@ impl Thumbs {
         ShelfPreview::SavedBrush { path: path.to_path_buf(), settings: settings.clone(), image: image.cloned() }
     }
 
-    /// A saved-brush key also identifies the refresh and image version of its request
+    /// A saved-brush key also identifies the refresh and image version of its request, and a user material's its generation
     fn worker_key(&self, preview: &ShelfPreview, size_px: usize) -> String {
         let key = format!("{}@{size_px}", preview.key());
-        if let ShelfPreview::SavedBrush { path, .. } = preview {
-            let revision = self.saved_brush_previews.get(path).map_or(0, |(_, _, revision)| *revision);
-            format!("{key}#{}:{revision}", self.saved_files_epoch)
-        } else {
-            key
+        match preview {
+            ShelfPreview::SavedBrush { path, .. } => {
+                let revision = self.saved_brush_previews.get(path).map_or(0, |(_, _, revision)| *revision);
+                format!("{key}#{}:{revision}", self.saved_files_epoch)
+            }
+            ShelfPreview::UserMaterial(path) => format!("{key}#{}", self.user_material_generations.get(path).copied().unwrap_or(0)),
+            _ => key,
         }
     }
 
@@ -463,6 +471,39 @@ mod user_material_tests {
         std::fs::remove_file(&rust).unwrap();
         thumbs.scan_user_materials(&[steel]);
         assert_eq!(thumbs.rendered.keys().collect::<Vec<_>>(), [&built_in]);
+
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_result_for_a_file_saved_again_does_not_fill_the_request_that_replaced_it() {
+        let folder = std::env::temp_dir().join(format!("tc-thumbs-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let steel = folder.join("steel.tcmat");
+        std::fs::write(&steel, b"first").unwrap();
+
+        let mut thumbs = Thumbs::default();
+        thumbs.worker = PreviewWorker::Inline { shape: Default::default(), results: Vec::new() };
+        thumbs.scan_user_materials(std::slice::from_ref(&steel));
+        let preview = ShelfPreview::UserMaterial(steel.clone());
+        let old_key = thumbs.worker_key(&preview, SPHERE_PX);
+        thumbs.rendered.insert(old_key.clone(), WorkerPreview::Rendering);
+
+        // The file is saved again while the worker is still on the old one, and the replacement is requested
+        std::fs::write(&steel, b"saved again with more contents").unwrap();
+        thumbs.scan_user_materials(std::slice::from_ref(&steel));
+        let new_key = thumbs.worker_key(&preview, SPHERE_PX);
+        assert_ne!(old_key, new_key, "the replacement is a different request");
+        thumbs.rendered.insert(new_key.clone(), WorkerPreview::Rendering);
+
+        // The old completion arrives now
+        if let PreviewWorker::Inline { results, .. } = &mut thumbs.worker {
+            results.push((old_key, Some(egui::ColorImage::filled([1, 1], egui::Color32::WHITE))));
+        }
+        let ctx = egui::Context::default();
+        let _ = ctx.run_pass(Default::default(), |_| {});
+        thumbs.receive(&ctx);
+        assert!(matches!(thumbs.rendered.get(&new_key), Some(WorkerPreview::Rendering)), "the replacement still waits for its own result");
 
         std::fs::remove_dir_all(&folder).unwrap();
     }
