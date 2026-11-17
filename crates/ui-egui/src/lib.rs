@@ -10,8 +10,11 @@
 mod bake_job;
 pub mod bake_mode;
 mod bake_scene;
+#[cfg(not(target_arch = "wasm32"))]
+mod brush_preset_save;
 mod color_selection_editor;
 pub mod control;
+mod decal_drop;
 pub mod dock;
 pub mod docking;
 pub mod export_templates;
@@ -19,30 +22,47 @@ pub mod export_templates;
 pub mod file_dialogs;
 mod filter_slot;
 pub mod fonts;
+mod generator_panel;
 pub mod gpu;
+mod grid_tile;
 pub mod i18n;
 pub mod id_color_pick;
 pub mod keymap;
 pub mod layer_panel;
+mod levels_editor;
+mod levels_handle;
+mod levels_properties;
 mod mask_preview_image;
 mod material_preview_image;
 pub mod menus;
 pub mod new_project_advanced;
 mod orb_shape;
 pub mod parity;
+mod path_hit;
+mod path_surface_cache;
 mod preview_image;
 mod preview_request;
 mod preview_worker;
 pub mod profile;
 pub mod properties_popup;
+mod rail_popup;
 pub mod render_mode;
 mod resource_picker;
 mod resource_picker_item;
 mod running_bake;
+pub mod saved_search;
+mod screen_color_pick;
 pub mod shelf;
+mod shelf_entry;
+mod shelf_folders;
+pub mod shelf_panes;
 pub mod shelf_preview;
+mod shelf_tabs;
+mod shelf_toolbar;
+pub mod shelf_view;
 mod soft_box;
 pub mod state;
+pub mod symmetry;
 pub mod theme;
 pub mod thumbs;
 pub mod titlebar;
@@ -196,6 +216,7 @@ impl TextureCraftApp {
             ui
         });
         let next_autosave = ui.prefs.autosave_minutes as f64 * 60.0;
+        ui.prefs.apply_resource_limits();
 
         let mut app = TextureCraftApp {
             camera_glide: None,
@@ -266,7 +287,9 @@ impl TextureCraftApp {
 
     /// Run an engine command, reporting errors as toasts. Returns the result on success.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
-        // Going to a saved camera glides there; the control channel and CLI jump straight away.
+        self.ui.prefs.apply_resource_limits();
+
+        // Going to a saved camera glides there; the control channel and CLI jump straight away
         let glide_from = (id.starts_with("camera.select") || id.starts_with("camera.bookmark")).then_some(self.session.camera);
         match texturecraft_engine::execute(&mut self.session, id, &params) {
             Ok(v) => {
@@ -316,7 +339,7 @@ impl TextureCraftApp {
         }
 
         let total = sets.len();
-        self.bake = Some(BakeJob { queue: sets, current: None, total });
+        self.bake = Some(BakeJob { queue: sets, current: None, total, mesh_id: self.session.mesh_id });
     }
 
     /// Re-cook MaterialCraft material layer `layer` in the background. While one cook of the layer
@@ -381,6 +404,15 @@ impl TextureCraftApp {
             self.session.bake_preview_end();
             return;
         };
+
+        if job.mesh_id != self.session.mesh_id {
+            // The mesh was swapped under the job: stop it and drop its result.
+            if let Some(running) = &job.current {
+                running.progress.cancel.store(true, Ordering::Relaxed);
+            }
+            self.bake = None;
+            return;
+        }
 
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
         if let Some(running) = &job.current {
@@ -539,7 +571,7 @@ fn spawn_worker<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 's
         let _ = tx.send(f());
     });
     if let Err(e) = spawned {
-        // The receiver reports a stopped worker.
+        // The receiver reports a stopped worker
         log::warn!("could not start {name}: {e}");
     }
     rx
@@ -547,7 +579,7 @@ fn spawn_worker<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 's
 
 #[cfg(target_arch = "wasm32")]
 fn spawn_worker<T: Send + 'static>(_name: &str, f: impl FnOnce() -> T + Send + 'static) -> std::sync::mpsc::Receiver<T> {
-    // shortcut: no threads on the web; the work runs on the UI thread (the window pauses).
+    // Web builds run the work synchronously because threads are unavailable
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = tx.send(f());
     rx
@@ -650,6 +682,7 @@ impl eframe::App for TextureCraftApp {
             self.styled = Some(style);
         }
         self.step_camera_glide(ctx);
+        self.ui.prefs.apply_resource_limits();
         control::poll(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.run_file_dialog_answers();
@@ -661,7 +694,8 @@ impl eframe::App for TextureCraftApp {
         self.poll_bake(ctx);
         self.poll_resize(ctx);
         self.poll_link_cooks(ctx);
-        // The library shelf rescans when the window comes back (MaterialCraft may have sent a material).
+        self.thumbs.sync_images(&self.session.images, self.session.revision);
+        // The library shelf rescans when the window comes back (MaterialCraft may have sent a material)
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         if focused && !self.focused {
             self.library = None;
@@ -684,9 +718,9 @@ impl eframe::App for TextureCraftApp {
         updates_ui::tick(self, ctx);
         self.bindings.sync(&self.ui.keymap, craft_keymap::egui::platform(ctx));
         menus::shortcuts(self, ctx);
-        // A stored path being edited repaints its sublayer as its points, brush or material change.
+        // The Path tool's curve repaints (a preview while placed) as its points, brush or material change
         if let Err(e) = self.session.path_live() {
-            self.session.stop_path_edit();
+            self.session.cancel_path();
             self.toast(e.to_string(), true);
         }
         profile::drive(self, ctx);
@@ -712,7 +746,7 @@ impl eframe::App for TextureCraftApp {
         }
         let hide = self.ui.hide_ui;
         let tk = theme::Tokens::get(&ctx);
-        // The dock keeps the cards' gutter from the bars and rails around it.
+        // The dock keeps the cards' gutter from the bars and rails around it
         let panel_frame = if hide { egui::Frame::NONE.fill(tk.viewport) } else { egui::Frame::NONE.fill(tk.chrome).inner_margin(theme::GUTTER) };
         egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| if hide { viewport::central(self, ui) } else { docking::show(self, ui) });
         windows::show(self, &ctx);

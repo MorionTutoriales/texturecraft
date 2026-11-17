@@ -4,13 +4,19 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BlendMode, Channel, ChannelKind, lum};
+use crate::{BakedMap, BlendMode, Channel, ChannelKind, lum};
 
 mod curvature_detail;
 mod curvature_mode;
+mod generator_global;
+mod output_resolution;
+mod resolution_mode;
 
 pub use curvature_detail::CurvatureDetail;
 pub use curvature_mode::CurvatureMode;
+pub use generator_global::GeneratorGlobal;
+pub use output_resolution::OutputResolution;
+pub use resolution_mode::ResolutionMode;
 
 /// Id of a layer or effect (one id space per project).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -526,6 +532,17 @@ impl GeneratorKind {
             GeneratorKind::Direction => "Light / direction",
         }
     }
+
+    /// The mesh maps this kind reads, each an input that an image, a uniform value or an anchor can replace.
+    pub fn inputs(self) -> &'static [BakedMap] {
+        match self {
+            GeneratorKind::EdgeWear | GeneratorKind::Curvature => &[BakedMap::Curvature],
+            GeneratorKind::Dirt | GeneratorKind::AmbientOcclusion => &[BakedMap::AmbientOcclusion],
+            GeneratorKind::ThinAreas => &[BakedMap::Thickness],
+            GeneratorKind::Position | GeneratorKind::Direction => &[],
+        }
+    }
+
     pub fn parse(s: &str) -> Option<GeneratorKind> {
         let norm = |x: &str| x.to_ascii_lowercase().replace([' ', '_', '-', ':'], "");
         GeneratorKind::ALL.into_iter().find(|k| norm(&format!("{k:?}")) == norm(s) || norm(k.label()) == norm(s))
@@ -543,15 +560,34 @@ pub struct Generator {
     pub noise_amount: f32,
     pub noise_scale: f32,
     pub seed: u32,
+    /// Added to the finished mask value and clamped to 0..1 (−1..1; 0 = unchanged).
+    #[serde(default)]
+    pub offset: f32,
     /// Direction for `Position` / `Direction` generators (world space).
     pub direction: [f32; 3],
     pub invert: bool,
     /// Mode and detail sizes of `Curvature` / `EdgeWear` generators (None: the curvature map as baked, as before detail sizes existed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<CurvatureDetail>,
+    /// Blur, balance and contrast of the finished value (neutral for generators saved before they existed).
+    #[serde(default, skip_serializing_if = "GeneratorGlobal::is_neutral")]
+    pub global: GeneratorGlobal,
+    /// The resolution the generator is computed at (the texture set's for generators saved before it existed).
+    #[serde(default, skip_serializing_if = "OutputResolution::is_default")]
+    pub resolution: OutputResolution,
+    /// What an input reads instead of its mesh map (an image, a uniform value or an anchor); inputs not listed read their mesh map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<BakedMap, Source>,
 }
 
 impl Generator {
+    /// The softest a ramp gets, so its threshold never divides by zero.
+    pub const MIN_SOFTNESS: f32 = 1e-3;
+    /// The most noise a generator mixes in, and the range of its noise scale.
+    pub const MAX_NOISE_AMOUNT: f32 = 2.0;
+    pub const MIN_NOISE_SCALE: f32 = 0.01;
+    pub const MAX_NOISE_SCALE: f32 = 1000.0;
+
     pub fn new(kind: GeneratorKind) -> Generator {
         let (level, softness, noise_amount) = match kind {
             GeneratorKind::EdgeWear => (0.5, 0.25, 0.3),
@@ -565,7 +601,33 @@ impl Generator {
             GeneratorKind::EdgeWear => Some(CurvatureDetail { mode: CurvatureMode::Edges, weights: CurvatureDetail::EDGE_WEIGHTS }),
             _ => None,
         };
-        Generator { kind, level, softness, noise_amount, noise_scale: 8.0, seed: 7, direction: [0.0, 1.0, 0.0], invert: false, detail }
+        Generator {
+            kind,
+            level,
+            softness,
+            noise_amount,
+            noise_scale: 8.0,
+            seed: 7,
+            offset: 0.0,
+            direction: [0.0, 1.0, 0.0],
+            invert: false,
+            detail,
+            global: GeneratorGlobal::default(),
+            resolution: OutputResolution::default(),
+            inputs: BTreeMap::new(),
+        }
+    }
+
+    /// The mask value for a (noise-broken) signal `s`: the smooth threshold at `level` over
+    /// `softness`, inverted if asked, then shifted by `offset` (a non-finite offset counts as 0).
+    pub fn shape(&self, s: f32) -> f32 {
+        let th = 1.0 - self.level.clamp(0.0, 1.0);
+        let soft = self.softness.max(1e-3);
+        let t = ((s - (th - soft)) / (2.0 * soft)).clamp(0.0, 1.0);
+        let v = t * t * (3.0 - 2.0 * t);
+        let v = if self.invert { 1.0 - v } else { v };
+        let offset = if self.offset.is_finite() { self.offset } else { 0.0 };
+        (v + offset).clamp(0.0, 1.0)
     }
 }
 
@@ -1023,13 +1085,45 @@ impl EffectKind {
         matches!(self, EffectKind::Paint | EffectKind::Path(_))
     }
 
-    /// Anchor points read by this effect's sources.
+    /// Whether a source of this effect (a fill, a material or a generator input) reads an anchor point.
     fn reads_anchor(&self) -> bool {
         match self {
             EffectKind::Fill { source, .. } => source.anchor().is_some(),
-            EffectKind::Material(f) => f.sources.values().any(|s| s.anchor().is_some()),
+            EffectKind::Material(fill) => fill.sources.values().any(|source| source.anchor().is_some()),
+            EffectKind::Generator(generator) => generator.inputs.values().any(|source| source.anchor().is_some()),
             _ => false,
         }
+    }
+
+    /// The anchor points this effect's sources read, with the channel each reads.
+    pub fn anchors_read(&self) -> Vec<(LayerId, Channel)> {
+        let sources: Vec<&Source> = match self {
+            EffectKind::Fill { source, .. } => vec![source],
+            EffectKind::Material(fill) => fill.sources.values().collect(),
+            EffectKind::Generator(generator) => generator.inputs.values().collect(),
+            _ => Vec::new(),
+        };
+        sources
+            .into_iter()
+            .filter_map(|source| match source {
+                Source::Anchor { anchor, channel } => Some((*anchor, *channel)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The image resources this effect's sources read (a fill, material or generator input).
+    pub fn images_read(&self) -> impl Iterator<Item = &str> {
+        let sources: Vec<&Source> = match self {
+            EffectKind::Fill { source, .. } => vec![source],
+            EffectKind::Material(fill) => fill.sources.values().collect(),
+            EffectKind::Generator(generator) => generator.inputs.values().collect(),
+            _ => Vec::new(),
+        };
+        sources.into_iter().filter_map(|source| match source {
+            Source::Image { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
     }
 }
 
@@ -1066,6 +1160,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn material_effect_images_are_reported_as_used() {
+        let mut fill = Fill::default();
+        fill.sources.insert(Channel::BaseColor, Source::image("material.png"));
+        let effect = EffectKind::Material(fill);
+
+        assert_eq!(effect.images_read().collect::<Vec<_>>(), vec!["material.png"]);
+    }
+
+    #[test]
+    fn generator_offset_shifts_the_mask_value() {
+        let mut g = Generator::new(GeneratorKind::Position);
+        let base = g.shape(0.2);
+        assert!(base < 0.5);
+        g.offset = 0.3;
+        assert!((g.shape(0.2) - (base + 0.3)).abs() < 1e-6, "the offset is added");
+        g.offset = 1.0;
+        assert_eq!(g.shape(0.2), 1.0, "and the result is clamped");
+        g.offset = -1.0;
+        assert_eq!(g.shape(0.9), 0.0);
+    }
+
+    #[test]
+    fn generator_non_finite_offset_counts_as_zero() {
+        let mut g = Generator::new(GeneratorKind::Position);
+        let base: Vec<f32> = [0.0, 0.2, 0.5, 0.9].iter().map(|&s| g.shape(s)).collect();
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            g.offset = bad;
+            let got: Vec<f32> = [0.0, 0.2, 0.5, 0.9].iter().map(|&s| g.shape(s)).collect();
+            assert_eq!(got, base, "offset {bad} behaves like 0");
+        }
+    }
+
+    #[test]
     fn curvature_generators_saved_before_detail_sizes_load_without_them() {
         let mut saved = serde_json::to_value(Generator::new(GeneratorKind::Curvature)).unwrap();
         assert!(saved.get("detail").is_some(), "new curvature generators have detail sizes");
@@ -1074,6 +1201,22 @@ mod tests {
         let loaded: Generator = serde_json::from_value(saved).unwrap();
         assert_eq!(loaded.detail, None);
         assert_eq!(Generator::new(GeneratorKind::Dirt).detail, None, "only curvature and edge wear generators have detail sizes");
+    }
+
+    #[test]
+    fn generators_saved_before_the_new_settings_load_and_save_unchanged() {
+        let saved = serde_json::to_value(Generator::new(GeneratorKind::Dirt)).unwrap();
+        for field in ["global", "resolution", "inputs"] {
+            assert!(saved.get(field).is_none(), "a default `{field}` is not written, so saved files stay as they were");
+        }
+
+        let loaded: Generator = serde_json::from_value(saved).unwrap();
+        assert!(loaded.global.is_neutral());
+
+        let mut blurred = Generator::new(GeneratorKind::Dirt);
+        blurred.global.blur = 0.5;
+        let round_trip: Generator = serde_json::from_value(serde_json::to_value(&blurred).unwrap()).unwrap();
+        assert_eq!(round_trip, blurred);
     }
 
     #[test]

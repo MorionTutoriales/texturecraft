@@ -28,6 +28,73 @@ fn save(h: &mut Harness<'_, TextureCraftApp>, dir: &Path, name: &str) {
     eprintln!("wrote {}", path.display());
 }
 
+/// Capture the moving preview and settled render after submitting real GPU callbacks.
+#[test]
+#[ignore]
+fn rendering_mode_snapshots() {
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let session = texturecraft_engine::sample_session(256, 64).unwrap();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.state_mut().ui.mode = Mode::Rendering;
+    harness.state_mut().ui.render.max_samples = 16;
+    eprintln!("Rendering-mode adapter: {}", harness.state().gpu.as_ref().unwrap().adapter);
+
+    // Submit each frame so the snapshots exercise the tracer callback, including size switches
+    for _ in 0..6 {
+        harness.state_mut().session.camera.yaw += 0.08;
+        harness.run_steps(1);
+        harness.render().unwrap();
+    }
+    let moving_path = output_dir.join("rendering-moving.png");
+    harness.render().unwrap().save(&moving_path).unwrap();
+    eprintln!("wrote {}", moving_path.display());
+
+    for _ in 0..45 {
+        harness.run_steps(1);
+        harness.render().unwrap();
+    }
+    save(&mut harness, &output_dir, "rendering-settled");
+}
+
+#[test]
+#[ignore]
+fn symmetry_snapshots() {
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let session = texturecraft_engine::sample_session(1024, 256).unwrap();
+    let mut harness =
+        Harness::builder().with_size(egui::vec2(1600.0, 960.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.prefs.language = "en".into();
+    harness.state_mut().run("tool.brush", serde_json::json!({"symmetryY": true, "symmetryOffset": [0, 0.1, 0]})).unwrap();
+    harness.state_mut().ui.symmetry.show_plane = true;
+    harness.state_mut().ui.symmetry.show_manipulator = true;
+    harness.run_steps(4);
+    harness.get_by_label("Symmetry settings").click();
+
+    for (brightness, name) in [(Brightness::MediumDark, "medium"), (Brightness::Dark, "dark"), (Brightness::Light, "light")] {
+        harness.state_mut().ui.prefs.brightness = brightness;
+        save(&mut harness, &output_dir, &format!("symmetry-mirror-{name}"));
+    }
+
+    harness.state_mut().run("tool.brush", serde_json::json!({"symmetryY": false, "symmetryRadial": 6, "symmetryAxis": "y", "symmetryAngleSpan": 240})).unwrap();
+    harness.state_mut().ui.symmetry.show_axis = true;
+    harness.state_mut().ui.prefs.brightness = Brightness::MediumDark;
+    save(&mut harness, &output_dir, "symmetry-radial");
+
+    harness.state_mut().run("tool.brush", serde_json::json!({"symmetryX": true, "symmetryY": true})).unwrap();
+    for (brightness, name) in [(Brightness::MediumDark, "medium"), (Brightness::Dark, "dark"), (Brightness::Light, "light")] {
+        harness.state_mut().ui.prefs.brightness = brightness;
+        save(&mut harness, &output_dir, &format!("symmetry-combined-{name}"));
+    }
+}
+
 #[test]
 #[ignore]
 fn window_snapshots() {
@@ -215,16 +282,16 @@ fn bake_uv_tiles_snapshot() {
     harness.state_mut().ui.mode = Mode::Baking;
     save(&mut harness, &output_dir, "bake-uv-tiles");
 
-    harness.get_by_value("128 × 128*").click();
+    harness.get_by_value("128x128*").click();
     save(&mut harness, &output_dir, "bake-tile-resolution-menu");
     harness.get_by_label("Remove resolution override").click();
     save(&mut harness, &output_dir, "bake-tile-resolution-inherited");
-    assert!(harness.query_by_value("128 × 128*").is_none());
+    assert!(harness.query_by_value("128x128*").is_none());
     assert!(harness.state().session.doc.project.texture_sets[0].tile_resolutions.is_empty());
     let inherited_resolution = harness.get_by_label("UV tile 1002 resolution").rect().center();
     harness.hover_at(inherited_resolution);
     save(&mut harness, &output_dir, "bake-tile-resolution-hover");
-    assert_eq!(harness.get_all_by_value("256 × 256").count(), 2);
+    assert_eq!(harness.get_all_by_value("256x256").count(), 2);
     harness.hover_at(egui::pos2(900.0, 500.0));
     harness.state_mut().session.undo().unwrap();
     harness.run_steps(3);
@@ -371,4 +438,127 @@ fn nested_layers_snapshot() {
         }
     }
     save(&mut harness, &output_dir, "panel-layers-narrow-nested");
+}
+
+#[test]
+#[ignore]
+fn path_tool_snapshots() {
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
+    texturecraft_engine::execute(&mut session, "layer.add.paint", &serde_json::Value::Null).unwrap();
+    texturecraft_engine::execute(&mut session, "tool.path", &serde_json::json!({"uvPoints": [[0.25, 0.5], [0.5, 0.3], [0.75, 0.5]]})).unwrap();
+    let mut harness =
+        Harness::builder().with_size(egui::vec2(1600.0, 960.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.layout = texturecraft_ui_egui::state::ViewLayout::Only2D;
+    harness.state_mut().session.select_path_point(1);
+    harness.hover_at(egui::pos2(800.0, 600.0));
+    save(&mut harness, &output_dir, "path-preview-2d");
+
+    harness.state_mut().session.commit_path(texturecraft_engine::geom::glam::Vec2::splat(400.0)).unwrap();
+    save(&mut harness, &output_dir, "path-stored-2d");
+}
+
+#[test]
+#[ignore]
+fn rail_window_snapshots() {
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else {
+        eprintln!("set TC_UI_SNAPSHOTS=<dir> to write the pictures");
+        return;
+    };
+
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let session = texturecraft_engine::sample_session(256, 64).unwrap();
+    let mut harness =
+        Harness::builder().with_size(egui::vec2(1600.0, 960.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.prefs.language = "en".into();
+    harness.state_mut().ui.dock.close(Panel::TextureSetSettings);
+    let context = harness.ctx.clone();
+
+    for (command, name) in [
+        ("ui.view.textureSetSettings", "rail-texture-set-settings"),
+        ("ui.view.display", "rail-display"),
+        ("ui.view.shader", "rail-shader"),
+        ("ui.view.history", "rail-history"),
+        ("ui.view.log", "rail-log"),
+    ] {
+        texturecraft_ui_egui::menus::invoke(harness.state_mut(), &context, command);
+        save(&mut harness, &output_dir, name);
+    }
+
+    harness.set_size(egui::vec2(1600.0, 600.0));
+    texturecraft_ui_egui::menus::invoke(harness.state_mut(), &context, "ui.view.display");
+    harness.run_steps(6);
+    harness.get_by_label("Temporal anti-aliasing (refines the 3D view while it is still)").scroll_to_me();
+    save(&mut harness, &output_dir, "rail-display-short");
+
+    harness.set_size(egui::vec2(1600.0, 400.0));
+    texturecraft_ui_egui::menus::invoke(harness.state_mut(), &context, "ui.view.history");
+    save(&mut harness, &output_dir, "rail-history-short");
+}
+
+/// Visual check of the migrated catalogs and the live language selector.
+#[test]
+#[ignore]
+fn i18n_snapshots() {
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&output_dir).unwrap();
+    for code in ["en", "es", "ar"] {
+        assert!(texturecraft_ui_egui::i18n::available(code), "build with migrated catalogs for {code}");
+        let session = texturecraft_engine::sample_session(128, 32).unwrap();
+        let mut harness =
+            Harness::builder().with_size(egui::vec2(1600.0, 960.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+        harness.state_mut().ui.prefs.language = code.into();
+        harness.state_mut().ui.windows.settings = true;
+        save(&mut harness, &output_dir, &format!("i18n-{code}"));
+    }
+    texturecraft_ui_egui::i18n::set_language("en");
+}
+
+/// Saved materials keep their previews and activation in every shelf layout
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[ignore]
+fn user_smart_material_shelf_snapshot() {
+    use texturecraft_engine::{Session, materials};
+    use texturecraft_ui_egui::shelf_view::ShelfView;
+
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let mut source = Session::new_project("Source", texturecraft_engine::geom::primitives::cube(2.0), "builtin:cube", None, 128).unwrap();
+    let group = materials::apply(&mut source, "steel_painted_worn").unwrap();
+    let file = output_dir.join("User preview.tcmat");
+    std::fs::write(&file, source.smart_material_bytes(group, "User preview").unwrap()).unwrap();
+    let session = Session::new_project("Saved material previews", texturecraft_engine::geom::primitives::cube(2.0), "builtin:cube", None, 128).unwrap();
+    let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).wgpu().build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.state_mut().ui.prefs.language = "en".into();
+    harness.state_mut().ui.shelf_tab = 1;
+    harness.state_mut().ui.shelf_filter = "User preview".into();
+    harness.state_mut().library = Some(vec![file.clone()]);
+    let context = harness.ctx.clone();
+    let started = std::time::Instant::now();
+    loop {
+        harness.run_steps(1);
+        if harness.state_mut().thumbs.user_material(&context, &file).is_some() {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(120), "saved material thumbnail did not arrive");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    for (view, name) in [(ShelfView::Small, "small"), (ShelfView::Medium, "medium"), (ShelfView::Large, "large"), (ShelfView::List, "list")] {
+        harness.state_mut().ui.shelf_view = view;
+        save(&mut harness, &output_dir, &format!("user-material-{name}"));
+        let tile = harness.get_by_role_and_label(egui::Role::Button, "User preview");
+        let heading = harness.get_by_label("My smart materials");
+        assert!(tile.rect().top() >= heading.rect().bottom(), "the preview belongs below the heading in {name} view");
+        if view == ShelfView::List {
+            assert!(tile.rect().width() > 150.0, "a list row uses the panel width");
+        }
+        let before = harness.state().session.doc.project.layers.len();
+        harness.get_by_role_and_label(egui::Role::Button, "User preview").click();
+        harness.run_steps(3);
+        assert!(harness.state().session.doc.project.layers.len() > before, "the saved material applies in {name} view");
+    }
+    std::fs::remove_file(file).unwrap();
 }

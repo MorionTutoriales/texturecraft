@@ -182,6 +182,15 @@ call("auth", {"token": token})
 print(call("command.run", {"id": "layer.add.fill", "params": {"color": [0.8, 0.1, 0.1]}}))
 ```
 
+The UI's `prefs.project_open_limit_gib` sets the maximum decompressed project data accepted on open
+(default 8 GiB, minimum 1 GiB). Set it with `ui.set {"prefs":{"project_open_limit_gib":16}}`;
+it takes effect before the next control request, without waiting for a frame, and persists with
+the UI preferences. Individual entry limits still apply. This controls opening only, independently
+of `prefs.reserved_cores` and `prefs.save_ram_percent` for saving.
+Settings bounds the reserved-core input to the available logical CPU count and shows the estimated
+save budget in GiB beside the RAM percentage. The readout refreshes once a second from currently
+available RAM; a save calculates its budget when it starts.
+
 ## MCP server
 
 `texturecraft-cli mcp` speaks MCP on stdin/stdout (stdout carries only protocol messages).
@@ -316,8 +325,9 @@ of a second.
 A `.mcmat` portable material (MaterialCraft's format, read here by `formats::mcmat`; the manifest is
 documented in MaterialCraft's `docs/control-protocol.md` § Portable materials) becomes a fill layer
 whose channel sources are its cooked maps and whose `link` (shown by `project.inspect`) holds the
-graph's exposed inputs, presets and image inputs. The apps share the format and the command line,
-not code.
+graph's exposed inputs, presets and image inputs. Both apps use the shared `craft-mcmat` container.
+Versions 1 and 2 are accepted; version 1 contains a legacy JSON `.mcraft` source that current
+MaterialCraft cannot reopen, so its cooked maps remain usable but re-cooking needs a compatible older version.
 
 | Command | Params |
 |---|---|
@@ -325,9 +335,9 @@ not code.
 | `material.link.set` | `{layer?, id, value, cook?: true}`: a number, `[..]`, a bool, `"#rrggbb"` or a typed `{"t", "v"}`; re-cooks unless `cook: false` |
 | `material.link.preset` | `{layer?, name, cook?: true}` |
 | `material.link.cook` | `{layer?}`: re-cook at the texture set's resolution with its baked mesh maps (after a bake or a resize) |
-| `material.link.saveSource` | `{layer?, path}`: the `.mcraft` package, to open in MaterialCraft |
+| `material.link.saveSource` | `{layer?, path}`: the `.mcraft` or `.sbs` source, to open in MaterialCraft |
 
-Re-cooks run `materialcraft-cli run <package> file.exportMaterial {path, size, values, inputs}`:
+Re-cooks use `materialcraft-cli batch` to open the saved graph by name and run `file.exportMaterial` with its size, values and inputs:
 `$MATERIALCRAFT_CLI`, else `materialcraft-cli` next to the TextureCraft executable, else on `PATH`
 (the app is `$MATERIALCRAFT` / `materialcraft`). Baked maps feed graph input nodes whose identifier
 matches the map's shared id (`ambientOcclusion`, `curvature`, `thickness`, `position`,

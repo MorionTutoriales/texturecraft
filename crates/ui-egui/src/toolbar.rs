@@ -17,29 +17,36 @@ const BAR_SPACING: f32 = 10.0;
 const COMPACT_BAR_SPACING: f32 = 4.0;
 const BAR_SEPARATOR_WIDTH: f32 = 6.0;
 
-pub fn tool_icon(t: Tool) -> &'static str {
-    match t {
+/// Height of the top bar, in points
+const BAR_HEIGHT: f32 = 40.0;
+
+/// Padding inside the top bar card on its left and right, in points
+const BAR_PADDING: egui::Margin = egui::Margin::symmetric(8, 0);
+
+pub fn tool_icon(tool: Tool) -> &'static str {
+    match tool {
         Tool::Paint => ic::PAINT_BRUSH,
         Tool::Eraser => ic::ERASER,
-        Tool::Projection => ic::PROJECTOR_SCREEN,
+        Tool::Projection => ic::CUBE_FOCUS,
         Tool::PolygonFill => ic::POLYGON,
         Tool::Smudge => ic::FINGERPRINT,
         Tool::Clone => ic::STAMP,
         Tool::ColorPicker => ic::EYEDROPPER,
-        Tool::Path => ic::PATH,
-        Tool::GeometryMask => ic::CUBE_FOCUS,
+        Tool::Path => ic::PEN_NIB_STRAIGHT,
+        Tool::GeometryMask => ic::SELECTION_SLASH,
     }
 }
 
 /// Keep mode buttons visible, with painting controls scrolling as space runs out
 pub fn paint_bar(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
     let tokens = Tokens::get(ui.ctx());
-    egui::Panel::top("paint_bar").exact_size(40.0).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
-        card(ui, &tokens, egui::Margin { bottom: GUTTER, ..Default::default() }, egui::Margin::symmetric(8, 0), |ui| {
+    egui::Panel::top("paint_bar").exact_size(BAR_HEIGHT).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
+        card(ui, &tokens, egui::Margin { bottom: GUTTER, ..Default::default() }, BAR_PADDING, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let button_size = ui.spacing().interact_size.y;
                 let mode_width = 3.0 * button_size + 2.0 * BAR_SPACING;
                 let separator_width = BAR_SEPARATOR_WIDTH + 2.0 * BAR_SPACING;
+
                 // Leave room for both scroll arrows and at least one button of content
                 let minimum_strip_width = 3.0 * button_size + 2.0 * BAR_SPACING;
                 let scroll_views =
@@ -54,7 +61,9 @@ pub fn paint_bar(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
                 ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
                 if !scroll_views {
                     view_buttons(app, ui);
-                    ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
+                    if app.session.tool_usable(app.session.tool.tool) {
+                        ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
+                    }
                 }
 
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -183,9 +192,15 @@ fn scrolling_tool_controls(app: &mut TextureCraftApp, ui: &mut egui::Ui, tokens:
             scroll_area.show(ui, |ui| {
                 ui.scroll_with_delta(vec2(scroll_delta, 0.0));
                 ui.horizontal_centered(|ui| {
-                    tool_controls(app, ui, tokens);
+                    // A tool that can't act on the selection leaves the bar, as the shelf greys it
+                    let tool_usable = app.session.tool_usable(app.session.tool.tool);
+                    if tool_usable {
+                        tool_controls(app, ui, tokens);
+                    }
                     if scroll_views {
-                        ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
+                        if tool_usable {
+                            ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
+                        }
                         let size = vec2(view_buttons_width(button_size, ui.spacing().item_spacing.x), ui.available_height());
                         ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| view_buttons(app, ui));
                     }
@@ -253,14 +268,11 @@ fn tool_controls(app: &mut TextureCraftApp, ui: &mut egui::Ui, tokens: &Tokens) 
             }
 
             ui.separator();
-            if icon_button(ui, ic::FLIP_HORIZONTAL, tr("Symmetry (X)"), brush.symmetry.x, button_size).clicked() {
-                brush.symmetry.x = !brush.symmetry.x;
-            }
-            if icon_button(ui, ic::FLIP_VERTICAL, tr("Symmetry (Y)"), brush.symmetry.y, button_size).clicked() {
-                brush.symmetry.y = !brush.symmetry.y;
-            }
             if icon_button(ui, ic::CLOUD_RAIN, tr("Particle brush: particles slide down the surface"), brush.particles.enabled, button_size).clicked() {
                 brush.particles.enabled = !brush.particles.enabled;
+            }
+            if crate::symmetry::applies_to(tool) {
+                crate::symmetry::toolbar_controls(app, ui);
             }
 
             if tool == Tool::Smudge {
@@ -325,83 +337,149 @@ pub fn fill_mode_buttons(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
 /// Path tool options and actions (top bar and properties)
 pub fn path_controls(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
     let button_size = ui.spacing().interact_size.y;
-    let path = &mut app.session.tool.path;
-    if icon_button(ui, ic::POLYGON, tr("Closed path"), path.closed, button_size).clicked() {
-        path.closed = !path.closed;
-    }
-    let fill_tip = if path.closed { tr("Fill the closed path (lasso)") } else { tr("Fill the path (close it first)") };
-    if icon_button(ui, ic::PAINT_BUCKET, fill_tip, path.fill, button_size).clicked() {
-        path.fill = !path.fill;
+    let path = &app.session.tool.path;
+    let (closed, fill) = (path.closed, path.fill);
+    let selected = path.selected.is_some_and(|i| i < path.points.len());
+    let has_points = !path.points.is_empty();
+    if icon_button(ui, ic::POLYGON, tr("Closed path"), closed, button_size).clicked() {
+        app.session.set_path_closed(!closed);
     }
 
-    let has_points = !path.points.is_empty();
-    if ui
-        .add_enabled(has_points, egui::Button::new(format!("{} {}", ic::CHECK, tr("Apply"))))
-        .on_hover_text(tr("Paint the path with the brush (Enter)"))
-        .clicked()
-    {
-        app.run("tool.path", json!({"commit": true}));
+    let fill_tip = if closed { tr("Fill the closed path (lasso)") } else { tr("Fill the path (close it first)") };
+    if icon_button(ui, ic::PAINT_BUCKET, fill_tip, fill, button_size).clicked() {
+        app.session.set_path_fill(!fill);
     }
-    if ui.add_enabled(has_points, egui::Button::new(format!("{} {}", ic::X, tr("Cancel")))).on_hover_text(tr("Remove the path (Esc)")).clicked() {
-        app.run("tool.path", json!({"clear": true}));
+
+    if ui.add_enabled_ui(selected, |ui| icon_button(ui, ic::BACKSPACE, tr("Remove point"), false, button_size)).inner.clicked() {
+        app.session.remove_selected_path_point();
+    }
+
+    if ui.add_enabled_ui(has_points, |ui| icon_button(ui, ic::CHECK, tr("Apply"), false, button_size)).inner.clicked() {
+        app.run("tool.path", json!({"commit": true}));
     }
 }
 
+/// Shelf order of the tools; their shortcut keys follow `Tool::ALL`
+const SHELF_TOOLS: [Tool; 9] =
+    [Tool::Paint, Tool::Eraser, Tool::Path, Tool::Projection, Tool::PolygonFill, Tool::Smudge, Tool::Clone, Tool::ColorPicker, Tool::GeometryMask];
+
+/// The tools Baking keeps on its shelf, greyed
+const BAKING_SHELF_TOOLS: [Tool; 3] = [Tool::Paint, Tool::Eraser, Tool::PolygonFill];
+
+/// Width of the tool shelf, in points
+const SHELF_WIDTH: f32 = 40.0;
+
+/// Size of a shelf button, in points
+const SHELF_BUTTON_SIZE: f32 = 28.0;
+
+/// Vertical gap between shelf buttons, in points
+const SHELF_BUTTON_SPACING: f32 = 3.0;
+
+/// Space on each side of the lines between shelf groups, in points
+const SHELF_GROUP_GAP: f32 = 6.0;
+
+/// Padding inside the shelf card around its buttons, in points (sides, then top and bottom)
+const SHELF_PADDING: egui::Margin = egui::Margin::symmetric(3, 6);
+
 pub fn tool_shelf(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
     let tokens = Tokens::get(ui.ctx());
-    egui::Panel::left("tool_shelf").resizable(false).exact_size(40.0).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
-        card(ui, &tokens, egui::Margin { left: GUTTER, right: 0, top: GUTTER, bottom: GUTTER }, egui::Margin::symmetric(3, 6), |ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
-            ui.add_enabled_ui(app.ui.mode == Mode::Painting, |ui| {
-                for tool in Tool::ALL {
-                    let selected = app.ui.mode == Mode::Painting && app.session.tool.tool == tool;
-                    let hint = tip(&app.ui.keymap, tr(tool.label()), &format!("tool.{}", tool.id()));
-                    if icon_button(ui, tool_icon(tool), &hint, selected, 28.0).clicked() {
+    egui::Panel::left("tool_shelf").resizable(false).exact_size(SHELF_WIDTH).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
+        // The tools start level with the panels' contents, below their tab strips
+        let top = GUTTER + crate::docking::TAB_HEIGHT as i8;
+        card(ui, &tokens, egui::Margin { left: GUTTER, right: 0, top, bottom: GUTTER }, SHELF_PADDING, |ui| {
+            ui.spacing_mut().item_spacing.y = SHELF_BUTTON_SPACING;
+
+            // Rendering has nothing to paint, so its shelf keeps only the buttons below the tools
+            let tools: &[Tool] = match app.ui.mode {
+                Mode::Painting => &SHELF_TOOLS,
+                Mode::Baking => &BAKING_SHELF_TOOLS,
+                Mode::Rendering => &[],
+            };
+            if !tools.is_empty() {
+                for &tool in tools {
+                    let command = format!("tool.{}", tool.id());
+                    let hint = tip(&app.ui.keymap, tr(tool.label()), &command);
+                    let (usable, selected) = match app.ui.mode {
+                        // In bake mode Paint is the cage or skew brush while one of them is being painted
+                        Mode::Baking => {
+                            let bake_brush = tool == Tool::Paint && app.ui.bake_paint_brush.on;
+                            (bake_brush, bake_brush)
+                        }
+                        // A greyed tool never shows as selected, even while it stays equipped
+                        _ => {
+                            let usable = crate::menus::enabled(app, &command);
+                            (usable, usable && app.session.tool.tool == tool)
+                        }
+                    };
+                    let button = ui.add_enabled_ui(usable, |ui| icon_button(ui, tool_icon(tool), &hint, selected, SHELF_BUTTON_SIZE)).inner;
+                    if button.on_disabled_hover_text(tr(tool.label())).clicked() && app.ui.mode == Mode::Painting {
                         app.run("tool.select", json!({"tool": tool.id()}));
                     }
                 }
 
-                ui.add_space(6.0);
+                ui.add_space(SHELF_GROUP_GAP);
                 ui.separator();
-                ui.add_space(6.0);
-                let quick_mask = &app.session.quick_mask;
-                for (command, icon, label, selected) in [
-                    ("viewport.quickMask", ic::SELECTION_BACKGROUND, tr("Quick mask"), quick_mask.enabled),
-                    ("viewport.quickMask.edit", ic::SELECTION, tr("Edit quick mask"), quick_mask.editing),
-                    ("viewport.quickMask.invert", ic::SELECTION_INVERSE, tr("Invert quick mask"), quick_mask.inverted),
-                ] {
-                    if icon_button(ui, icon, &tip(&app.ui.keymap, label, command), selected, 28.0).clicked() {
-                        app.run(command, json!({}));
-                    }
-                }
+                ui.add_space(SHELF_GROUP_GAP);
+            }
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
-                if icon_button(ui, ic::SPHERE, tr("Add smart material from the shelf"), false, 28.0).clicked() {
-                    app.ui.dock.focus(Panel::Assets);
+            let quick_mask = &app.session.quick_mask;
+            for (command, icon, label, selected) in [
+                ("viewport.quickMask", ic::SELECTION_BACKGROUND, tr("Quick mask"), quick_mask.enabled),
+                ("viewport.quickMask.edit", ic::SELECTION, tr("Edit quick mask"), quick_mask.editing),
+                ("viewport.quickMask.invert", ic::SELECTION_INVERSE, tr("Invert quick mask"), quick_mask.inverted),
+            ] {
+                let hint = tip(&app.ui.keymap, label, command);
+                let button = ui.add_enabled_ui(crate::menus::enabled(app, command), |ui| icon_button(ui, icon, &hint, selected, SHELF_BUTTON_SIZE)).inner;
+                if button.on_disabled_hover_text(label).clicked() {
+                    app.run(command, json!({}));
                 }
-            });
+            }
+
+            ui.add_space(SHELF_GROUP_GAP);
+            ui.separator();
+            ui.add_space(SHELF_GROUP_GAP);
+            let painting = app.ui.mode == Mode::Painting;
+            if ui.add_enabled_ui(painting, |ui| icon_button(ui, ic::SPHERE, tr("Add smart material from the shelf"), false, SHELF_BUTTON_SIZE)).inner.clicked()
+            {
+                app.ui.dock.focus(Panel::Assets);
+            }
         });
     });
 }
 
+/// Width of the icon rail beside the dock
+const RAIL_WIDTH: f32 = 38.0;
+
+/// Size of the rail's icons
+const RAIL_ICON_SIZE: f32 = 26.0;
+
+/// Gap between the rail's icons
+const RAIL_ICON_GAP: f32 = 4.0;
+
+/// Padding inside the rail's card around its icons, as the tool shelf's
+const RAIL_CARD_PADDING: egui::Margin = egui::Margin::symmetric(3, 6);
+
+/// The icon rail: Export, then the rail panels that are not in the dock, each opening its popup
 pub fn rail(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
-    let tk = Tokens::get(ui.ctx());
-    egui::Panel::right("rail").resizable(false).exact_size(38.0).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
-        card(ui, &tk, egui::Margin { left: 0, right: GUTTER, top: GUTTER, bottom: GUTTER }, egui::Margin::symmetric(3, 6), |ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            if icon_button(ui, ic::EXPORT, &tip(&app.ui.keymap, tr("Export textures"), "ui.export"), app.ui.windows.export, 26.0).clicked() {
+    let tokens = Tokens::get(ui.ctx());
+    egui::Panel::right("rail").resizable(false).exact_size(RAIL_WIDTH).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
+        card(ui, &tokens, egui::Margin { left: 0, right: GUTTER, top: GUTTER, bottom: GUTTER }, RAIL_CARD_PADDING, |ui| {
+            ui.spacing_mut().item_spacing.y = RAIL_ICON_GAP;
+            crate::rail_popup::begin_rail(ui.ctx(), ui.max_rect());
+            if icon_button(ui, ic::EXPORT, &tip(&app.ui.keymap, tr("Export textures"), "ui.export"), app.ui.windows.export, RAIL_ICON_SIZE).clicked() {
                 app.ui.windows.export = !app.ui.windows.export;
             }
-            for (panel, icon, id) in [
-                (Panel::TextureSetSettings, ic::STACK, "ui.view.textureSetSettings"),
-                (Panel::Display, ic::MONITOR, "ui.view.display"),
-                (Panel::Shader, ic::SLIDERS_HORIZONTAL, "ui.view.shader"),
-                (Panel::History, ic::CLOCK_COUNTER_CLOCKWISE, "ui.view.history"),
-            ] {
-                if icon_button(ui, icon, &tip(&app.ui.keymap, tr(panel.name()), id), app.ui.dock.is_visible(panel), 26.0).clicked() {
-                    app.ui.dock.toggle(panel);
+
+            // A panel in the dock, docked or floating, leaves the rail until it is closed there
+            for (panel, icon, id) in crate::rail_popup::RAIL_PANELS {
+                if app.ui.dock.is_open(panel) {
+                    continue;
+                }
+
+                let response = icon_button(ui, icon, &tip(&app.ui.keymap, tr(panel.name()), id), app.ui.rail_panel == Some(panel), RAIL_ICON_SIZE);
+                crate::rail_popup::remember_icon(ui.ctx(), panel, response.rect);
+                if response.clicked() {
+                    crate::rail_popup::toggle(app, panel);
                 }
             }
         });

@@ -37,10 +37,11 @@ pub mod meshmap_import_cmds;
 mod orb_camera;
 pub mod orb_preview;
 pub mod painting;
+mod path_draft;
 pub mod path_tool;
 mod polygon_fill;
 mod polygon_fill_drag;
-// Mesh reimport reads files: native only.
+// Mesh reimport reads files on native targets only
 #[cfg(not(target_arch = "wasm32"))]
 mod preserve;
 pub mod preset_cmds;
@@ -54,6 +55,7 @@ pub mod smart_masks;
 pub mod template_cmds;
 pub mod text_cmds;
 pub mod thumbs;
+mod tool_availability;
 pub mod tool_cmds;
 mod triangle_partition;
 mod uv_stroke_state;

@@ -153,32 +153,65 @@ fn library_alphas_shape_the_stamp() {
 
 #[test]
 fn quick_mask_limits_painting() {
-    let mut s = session();
-    paint_red(&mut s, 20.0);
-    let r = execute(&mut s, "viewport.quickMask.edit", &Value::Null).unwrap();
-    assert_eq!(r["editing"], json!(true));
-    assert_eq!(r["enabled"], json!(true), "editing enables the mask");
-    let undo = s.history_labels().len();
-    dab(&mut s, 150.0, 200.0);
-    assert!(!red(color_at(&s, 150.0, 200.0)), "mask strokes do not paint the layer");
-    assert_eq!(s.history_labels().len(), undo, "mask strokes stay out of the history");
-    assert!(s.quick_mask_rgba(0, 64).is_some_and(|v| v.len() == 64 * 64 * 4));
-    execute(&mut s, "viewport.quickMask.edit", &Value::Null).unwrap();
+    let mut session = session();
+    paint_red(&mut session, 20.0);
+    execute(&mut session, "viewport.quickMask", &json!({"enabled": true})).unwrap();
 
-    execute(&mut s, "tool.brush", &json!({"size": 6})).unwrap();
-    dab(&mut s, 150.0, 200.0);
-    dab(&mut s, 250.0, 200.0);
-    assert!(red(color_at(&s, 150.0, 200.0)), "inside the mask");
-    assert!(!red(color_at(&s, 250.0, 200.0)), "outside the mask");
+    let state = execute(&mut session, "viewport.quickMask.edit", &Value::Null).unwrap();
+    let undo = session.history_labels().len();
+    dab(&mut session, 150.0, 200.0);
 
-    execute(&mut s, "viewport.quickMask.invert", &Value::Null).unwrap();
-    dab(&mut s, 250.0, 200.0);
-    assert!(red(color_at(&s, 250.0, 200.0)), "inverted: outside is open");
+    assert_eq!(state["editing"], json!(true));
+    assert!(!red(color_at(&session, 150.0, 200.0)), "mask strokes do not paint the layer");
+    assert_eq!(session.history_labels().len(), undo, "mask strokes stay out of the history");
+    let overlay_size: u32 = 64;
+    let rgba_bytes = (overlay_size * overlay_size * 4) as usize;
+    assert!(session.quick_mask_rgba(0, overlay_size).is_some_and(|pixels| pixels.len() == rgba_bytes), "an RGBA8 overlay of the requested size");
 
-    execute(&mut s, "viewport.quickMask", &json!({"enabled": false})).unwrap();
-    execute(&mut s, "tool.material", &json!({"channel": "baseColor", "color": [0.0, 1.0, 0.0]})).unwrap();
-    dab(&mut s, 150.0, 200.0);
-    assert!(color_at(&s, 150.0, 200.0)[1] > 0.85, "disabled: everything is open");
+    execute(&mut session, "viewport.quickMask.edit", &Value::Null).unwrap();
+    execute(&mut session, "tool.brush", &json!({"size": 6})).unwrap();
+    dab(&mut session, 150.0, 200.0);
+    dab(&mut session, 250.0, 200.0);
+
+    assert!(red(color_at(&session, 150.0, 200.0)), "inside the mask");
+    assert!(!red(color_at(&session, 250.0, 200.0)), "outside the mask");
+
+    execute(&mut session, "viewport.quickMask.invert", &Value::Null).unwrap();
+    dab(&mut session, 250.0, 200.0);
+
+    assert!(red(color_at(&session, 250.0, 200.0)), "inverted: outside is open");
+
+    execute(&mut session, "viewport.quickMask", &json!({"enabled": false})).unwrap();
+    execute(&mut session, "tool.material", &json!({"channel": "baseColor", "color": [0.0, 1.0, 0.0]})).unwrap();
+    dab(&mut session, 150.0, 200.0);
+
+    assert!(color_at(&session, 150.0, 200.0)[1] > 0.85, "disabled: everything is open");
+}
+
+/// How much redder than green a texel must be to count as painted (faded edges included)
+const PAINTED_TINT: f32 = 0.05;
+
+/// Separate painted runs down texture column `x` (base color tinted red)
+fn painted_runs(session: &Session, x: u32) -> usize {
+    let painted = |y: u32| {
+        let color = session.caches[0].composite.value(Channel::BaseColor, x, y);
+        color[0] - color[1] > PAINTED_TINT
+    };
+    (0..RES as u32).filter(|&y| painted(y) && (y == 0 || !painted(y - 1))).count()
+}
+
+#[test]
+fn a_stroke_to_the_edge_of_the_mesh_fades_without_breaking_into_dots() {
+    let mut session = session();
+    paint_red(&mut session, 4.0);
+    // From the middle of the view to past the ball's right edge, above center
+    let points: Vec<Value> = (0..40).map(|step| json!([200.0 + step as f32 * 6.0, 165.0])).collect();
+    execute(&mut session, "tool.stroke", &json!({"points": points})).unwrap();
+    session.update();
+
+    // The stroke crosses each texture column once, also where the surface turns away from the camera
+    let broken: Vec<u32> = (0..RES as u32).filter(|&x| painted_runs(&session, x) > 1).collect();
+    assert!(broken.is_empty(), "columns with gaps: {broken:?}");
 }
 
 #[test]
@@ -217,4 +250,55 @@ fn swap_mask_value_inverts_only_while_a_mask_is_the_target() {
     swap(&mut session).unwrap();
 
     assert_eq!(session.tool.mask_value, 0.0, "a mask effect paints the mask too");
+}
+
+#[test]
+fn stroke_after_undoing_mask_is_paint_stroke() {
+    let mut s = Session::new_project("t", primitives::sphere(1.0, 48, 24), "builtin:random", None, 256).unwrap();
+    s.viewport = Vec2::new(400.0, 400.0);
+    execute(&mut s, "layer.add.fill", &json!({"color": [0.2, 0.5, 0.3], "roughness": 0.7})).unwrap();
+    execute(&mut s, "layer.add.paint", &Value::Null).unwrap();
+    s.update();
+    execute(&mut s, "tool.brush", &json!({"size": 20, "hardness": 50, "opacity": 0.8})).unwrap();
+    execute(&mut s, "tool.paint", &Value::Null).unwrap();
+    execute(&mut s, "tool.material", &json!({"channel": "baseColor", "color": [0.9, 0.3, 0.9]})).unwrap();
+
+    execute(&mut s, "tool.stroke", &json!({"points": [[130, 130], [170, 150]]})).unwrap();
+    s.update();
+    execute(&mut s, "mask.add.white", &Value::Null).unwrap();
+    s.update();
+    execute(&mut s, "edit.undo", &Value::Null).unwrap();
+    s.update();
+    execute(&mut s, "tool.stroke", &json!({"points": [[167, 183], [207, 203]]})).unwrap();
+    s.update();
+
+    let undone = execute(&mut s, "edit.undo", &Value::Null).unwrap();
+    assert_eq!(undone["undone"], "Paint stroke", "the stroke after undoing the mask was recorded as {}", undone["undone"]);
+    execute(&mut s, "edit.redo", &Value::Null).unwrap();
+    s.update();
+
+    let settled = s.caches[0].composite.clone();
+    s.caches[0].below.clear();
+    s.caches[0].invalidate_all();
+    s.update();
+    assert_eq!(settled, s.caches[0].composite, "the composite after the stroke matches a full recomposite");
+}
+
+#[test]
+fn undoing_after_painting_on_instance_source_mask_keeps_mask_target() {
+    let mut s = Session::new_project("t", primitives::sphere(1.0, 48, 24), "builtin:random", None, 256).unwrap();
+    s.viewport = Vec2::new(400.0, 400.0);
+    execute(&mut s, "layer.add.paint", &Value::Null).unwrap();
+    execute(&mut s, "mask.add.white", &Value::Null).unwrap();
+    execute(&mut s, "layer.instance", &Value::Null).unwrap();
+    s.update();
+    s.target = StackTarget::Mask;
+    execute(&mut s, "tool.brush", &json!({"size": 20, "hardness": 50, "opacity": 0.8})).unwrap();
+    execute(&mut s, "tool.stroke", &json!({"points": [[170, 180], [210, 200]]})).unwrap();
+    execute(&mut s, "edit.undo", &Value::Null).unwrap();
+    assert_eq!(s.target, StackTarget::Mask);
+
+    execute(&mut s, "tool.stroke", &json!({"points": [[180, 180], [210, 200]]})).unwrap();
+    let undone = execute(&mut s, "edit.undo", &Value::Null).unwrap();
+    assert_eq!(undone["undone"], "Mask stroke");
 }
