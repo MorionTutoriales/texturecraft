@@ -282,6 +282,7 @@ impl GpuLink {
                     if self.aux.get(&texture_set) == Some(&key) {
                         continue;
                     }
+
                     let Some(cache) = session.caches.get(texture_set) else { continue };
 
                     let resolution = texturecraft_render::aux_size(cache.size);
@@ -300,9 +301,20 @@ impl GpuLink {
                     if self.aux.get(&texture_set) != Some(&key) && !session.stroke_active() {
                         let resolution =
                             session.caches.get(texture_set).map_or(MASK_VIEW_FALLBACK_RESOLUTION, |cache| texturecraft_render::aux_size(cache.size));
-                        if let Some(rgba) = session.mask_view_rgba(id, resolution) {
-                            out.aux.push((texture_set, resolution, rgba));
-                        }
+                        let rgba = session.mask_view_rgba(id, resolution).unwrap_or_else(|| MASK_VIEW_BLANK.repeat((resolution * resolution) as usize));
+                        out.aux.push((texture_set, resolution, rgba));
+                        self.aux.insert(texture_set, key);
+                    }
+                }
+
+                // The other texture sets show nothing of this mask: a flat dark gray
+                let shown = session.doc.project.locate(id).map(|(texture_set, _, _)| texture_set);
+                for texture_set in (0..session.caches.len()).filter(|set| Some(*set) != shown) {
+                    let Some(cache) = session.caches.get(texture_set) else { continue };
+                    let resolution = texturecraft_render::aux_size(cache.size);
+                    let key = ("maskblank".to_owned(), u64::from(resolution));
+                    if self.aux.get(&texture_set) != Some(&key) {
+                        out.aux.push((texture_set, resolution, MASK_VIEW_BLANK.repeat((resolution * resolution) as usize)));
                         self.aux.insert(texture_set, key);
                     }
                 }
@@ -315,6 +327,7 @@ impl GpuLink {
                     if self.aux.get(&texture_set) == Some(&key) {
                         continue;
                     }
+
                     let resolution = texturecraft_render::aux_size(cache.size);
                     if let Some(rgba) = session.quick_mask_rgba(texture_set, resolution) {
                         out.aux.push((texture_set, resolution, rgba));
@@ -349,6 +362,9 @@ fn record_recreated_uploads(recreated: &mut BTreeMap<usize, BTreeSet<DisplayKind
 
 /// Mask view resolution for a texture set without a composite cache
 const MASK_VIEW_FALLBACK_RESOLUTION: u32 = 1024;
+
+/// RGBA of the texel the other texture sets show in the mask view
+const MASK_VIEW_BLANK: [u8; 4] = [38, 38, 38, 255];
 
 /// Paint callback for one view.
 pub struct ViewCallback {
@@ -500,6 +516,45 @@ mod tests {
             execute(&mut s, "layer.fill.set", &json!({"channel": "emissive", "color": [1.0, 0.5, 0.0]})).unwrap();
         }
         s
+    }
+
+    #[test]
+    fn the_mask_view_uploads_the_mask_for_its_set_and_a_blank_for_the_others() {
+        let mut gpu = link();
+        let mut s = texturecraft_engine::sample_session(128, 64).unwrap();
+        assert!(s.doc.project.texture_sets.len() >= 2, "needs another set to blank");
+        let layer = texturecraft_engine::core::LayerId(execute(&mut s, "layer.add.fill", &json!({})).unwrap()["layer"].as_u64().unwrap());
+        execute(&mut s, "mask.add.white", &json!({})).unwrap();
+        let owner = s.doc.project.locate(layer).unwrap().0;
+        let sets = s.doc.project.texture_sets.len();
+
+        let out = gpu.sync(&mut s, Some(AuxView::Mask(layer)), None, 0, 0.0);
+        assert_eq!(out.aux.len(), sets, "every set gets an aux texture");
+        for (set, _, rgba) in &out.aux {
+            let blank = rgba.chunks(4).all(|px| px == MASK_VIEW_BLANK);
+            assert_eq!(blank, *set != owner, "set {set}: only the other sets are blank");
+        }
+        drop(out);
+        let out = gpu.sync(&mut s, Some(AuxView::Mask(layer)), None, 0, 0.0);
+        assert!(out.aux.is_empty(), "nothing is sent again while the view stays");
+        drop(out);
+
+        execute(&mut s, "mask.toggle", &json!({"layer": layer.0, "enabled": false})).unwrap();
+        let out = gpu.sync(&mut s, Some(AuxView::Mask(layer)), None, 0, 0.0);
+        assert_eq!(out.aux.len(), 1, "disabling the displayed mask replaces its old upload");
+        let (set, resolution, rgba) = &out.aux[0];
+        assert_eq!(*set, owner);
+        assert_eq!(*rgba, MASK_VIEW_BLANK.repeat((resolution * resolution) as usize));
+        assert_eq!(gpu.aux.len(), sets, "only view keys remain in the link");
+        drop(out);
+        let out = gpu.sync(&mut s, Some(AuxView::Mask(layer)), None, 0, 0.0);
+        assert!(out.aux.is_empty(), "the disabled view needs no repeat upload");
+        drop(out);
+
+        execute(&mut s, "mask.toggle", &json!({"layer": layer.0, "enabled": true})).unwrap();
+        let out = gpu.sync(&mut s, Some(AuxView::Mask(layer)), None, 0, 0.0);
+        assert_eq!(out.aux.len(), 1, "re-enabling the mask uploads its values again");
+        assert!(out.aux[0].2.chunks(4).any(|pixel| pixel != MASK_VIEW_BLANK));
     }
 
     fn kinds(out: &SceneSync) -> BTreeSet<DisplayKind> {

@@ -3,11 +3,11 @@
 use serde_json::{Value, json};
 use texturecraft_core::{
     BakedMap, BlendMode, Channel, CompareOp, CurvatureDetail, CurvatureMode, Effect, EffectKind, Filter, Generator, GeneratorKind, LayerId, Levels, Mask,
-    MaskBackground, MicroDetail, OutputResolution, Procedural, ProceduralKind, Project, ResolutionMode, Source,
+    MaskBackground, MicroDetail, Procedural, ProceduralKind, Project, Source,
 };
 
 use crate::commands::{CommandSpec, always, bad, blend_param, boolp, channel_param, color_param, f32p, has_layer, layer_param, strp, u64p};
-use crate::layer_cmds::projection_from;
+use crate::layer_cmds::{projection_from, projection_from_fields};
 use crate::session::StackTarget;
 use crate::{EngineError, Result, Session, cmd};
 
@@ -20,7 +20,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add mask with color selection",
             ["Layers", "Mask"],
             None,
-            "{layer?, color?: [r,g,b] ID color, tolerance?}",
+            "{layer?, color?: ID color as [r,g,b] linear or \"#rrggbb\" sRGB, tolerance?}",
             has_layer,
             add_color_mask
         ),
@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add fill",
             ["Layers", "Effects"],
             None,
-            "{layer?, target?: mask|content, name?, mask: value?: 0..1 | image?: resource name | procedural?: kind, scale?, seed? | anchor?: anchor effect id, anchorChannel?: channel (height); content: color?, roughness?, metallic?, height?, opacity? (default: every layer channel); projection?}",
+            "{layer?, target?: mask|content, name?, mask: value?: 0..1 | image?: resource name | procedural?: kind, scale?, seed?, contrast?, balance?, invert?, resolution?: auto|textureSet|uvTile|custom, customResolution?, resolutionFactor?: -3..3, tile?: {Tile Generator settings in camelCase, as project.inspect shows them}, tileDefaults?: true | anchor?: anchor effect id, anchorChannel?: channel (height); content: color? ([r,g,b] linear or \"#rrggbb\" sRGB), roughness?, metallic?, height?, opacity? (default: every layer channel); projection?}",
             has_layer,
             add_fill
         ),
@@ -67,7 +67,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add filter",
             ["Layers", "Effects"],
             None,
-            "{layer?, target?: mask|content, name?, filter?: id from filter.list (invert, threshold, blur, sharpen, hsl, levels, contrastLuminosity, colorBalance, gradientMap, posterize, clamp, histogramScan|Range|Shift, warp, blurDirectional, slopeBlur, matFinishGrind|Raw|Sanded|Hammered), level?, radius?, amount?, hue?: turns -1..1, saturation?, lightness?, contrast?, luminosity?, shadows?|midtones?|highlights?: [r,g,b] -1..1, colors?: [[r,g,b]|\"#rrggbb\", ...], levels?, min?, max?, position?, range?, offset?, intensity?, scale?, seed?, angle?} — material finishes go on the content",
+            "{layer?, target?: mask|content, name?, filter?: id from filter.list (invert, threshold, blur, sharpen, hsl, levels, contrastLuminosity, colorBalance, gradientMap, posterize, clamp, histogramScan|Range|Shift, warp, blurDirectional, slopeBlur, matFinishGrind|Raw|Sanded|Hammered), level?, radius?, amount?, hue?: turns -1..1, saturation?, lightness?, contrast?, luminosity?, shadows?|midtones?|highlights?: [r,g,b] -1..1, colors?: [[r,g,b] linear or \"#rrggbb\" sRGB, ...], levels?, min?, max?, position?, range?, offset?, intensity?, scale?, seed?, angle?} — material finishes go on the content",
             has_layer,
             add_filter
         ),
@@ -94,7 +94,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit effect",
             [],
             None,
-            "{effect, visible?, blend?, opacity?, name?, filter?: id from filter.list (a filter effect only: swaps its type, keeping position, blend and opacity; its current id edits it in place), generator?: kind (a generator effect only: changes kind in place), level?, softness?, noise?, noiseScale?, offset?, invert?, blur?, balance?, contrast?, resolution?, customResolution?, resolutionFactor?, input?: mesh map id + one of inputImage?, inputValue?, inputAnchor?, inputBaked?: true (a generator), mode?, sizes?, microAnchor?: id|null, microAmount?, value?, image?: resource name (a fill's source), projection?: uv|triplanar|planar|spherical|cylindrical, scale?, rotation?, offset?, axis?, sharpness? (a fill effect's projection), anchor?, anchorChannel?, inLow?, inHigh?, gamma?, outLow?, outHigh?, tolerance?, colors?: [[r,g,b], ...] (a color selection's ID colors), filter parameters (see effect.add.filter)}",
+            "{effect, visible?, blend?, opacity?, name?, filter?: id from filter.list (a filter effect only: swaps its type, keeping position, blend and opacity; its current id edits it in place), generator?: kind (a generator effect only: changes kind in place), level?, softness?, noise?, noiseScale?, offset?, invert?, blur?, balance?, contrast?, resolution?, customResolution?, resolutionFactor?, input?: mesh map id + one of inputImage?, inputValue?, inputAnchor?, inputBaked?: true (a generator), mode?, sizes?, microAnchor?: id|null, microAmount?, value?, uniform?: 0..1 (a mask fill reads that value, whatever its source), procedural?: kind (a mask fill) with scale?, seed?, contrast?, balance?, invert?, resolution?, tile?, tileDefaults? (alone, they edit its pattern), image?: resource name (a fill's source), projection?: uv|triplanar|planar|spherical|cylindrical, scale?, rotation?, offset?, axis?, sharpness? (a fill effect's projection; while it reads a pattern, scale is the pattern's), anchor?, anchorChannel?, inLow?, inHigh?, gamma?, outLow?, outHigh?, tolerance?, colors?: [[r,g,b] linear, ...] (a color selection's ID colors), filter parameters (see effect.add.filter)}",
             has_layer,
             set
         ),
@@ -273,11 +273,12 @@ pub(crate) fn anchor_source(s: &Session, cmd: &str, reader: LayerId, anchor: Lay
         Some((owner, e)) if matches!(e.kind, EffectKind::Anchor) => owner,
         _ => return Err(bad(cmd, format!("{} is not an anchor point", anchor.0))),
     };
+
     let (ts, _, _) = s.doc.project.locate(reader).ok_or_else(|| bad(cmd, "layer not in a stack"))?;
     let order: Vec<LayerId> = s.doc.project.walk(ts).into_iter().map(|(id, _)| id).collect();
     let pos = |id: LayerId| order.iter().position(|x| *x == id);
     match (pos(owner), pos(reader)) {
-        (Some(o), Some(r)) if o < r => Ok(Source::Anchor { anchor, channel }),
+        (Some(o), Some(r)) if o < r => Ok(Source::Anchor { anchor, channel, ramp: Vec::new() }),
         _ => Err(bad(cmd, "the anchor point must be on a layer below this one in the same texture set")),
     }
 }
@@ -294,10 +295,6 @@ fn image_source(session: &Session, command: &str, name: &str) -> Result<Source> 
 
 fn add_fill(session: &mut Session, params: &Value) -> Result<Value> {
     const CMD: &str = "effect.add.fill";
-    const MIN_PATTERN_SCALE: f32 = 0.001;
-    const MAX_PATTERN_SCALE: f32 = 1000.0;
-
-    let projection = projection_from(params, CMD, None)?;
     let blend = blend_param(CMD, params, "blend")?.unwrap_or(BlendMode::Normal);
     let layer = layer_param(session, CMD, params)?;
 
@@ -307,37 +304,30 @@ fn add_fill(session: &mut Session, params: &Value) -> Result<Value> {
             fill.sources = session.doc.project.layer(layer)?.channels.keys().map(|channel| (*channel, Source::uniform_of(*channel))).collect();
         }
 
-        fill.projection = projection;
+        fill.projection = projection_from(params, CMD, None)?;
         return push_effect(session, params, EffectKind::Material(fill), blend);
     }
 
-    if let Some(anchor) = u64p(params, "anchor") {
+    let source = if let Some(anchor) = u64p(params, "anchor") {
         let channel = channel_param(CMD, params, "anchorChannel")?.unwrap_or(Channel::Height);
         let reader = session.doc.project.mask_owner(layer);
-        let source = anchor_source(session, CMD, reader, LayerId(anchor), channel)?;
-        return push_effect(session, params, EffectKind::Fill { source, projection }, blend);
-    }
+        anchor_source(session, CMD, reader, LayerId(anchor), channel)?
+    } else if let Some(name) = strp(params, "image") {
+        image_source(session, CMD, name)?
+    } else if let Some(name) = strp(params, "procedural") {
+        let kind = ProceduralKind::parse(name).ok_or_else(|| bad(CMD, format!("unknown procedural `{name}`")))?;
+        let mut pattern = Procedural::new(kind);
+        crate::procedural_params::pattern_basics_from(params, &mut pattern);
+        crate::procedural_params::pattern_settings_from(CMD, params, &mut pattern)?;
 
-    if let Some(name) = strp(params, "image") {
-        let source = image_source(session, CMD, name)?;
-        return push_effect(session, params, EffectKind::Fill { source, projection }, blend);
-    }
-
-    let source = match strp(params, "procedural") {
-        Some(name) => {
-            let kind = ProceduralKind::parse(name).ok_or_else(|| bad(CMD, format!("unknown procedural `{name}`")))?;
-            let mut pattern = Procedural::new(kind);
-            if let Some(scale) = f32p(params, "scale") {
-                pattern.scale = scale.clamp(MIN_PATTERN_SCALE, MAX_PATTERN_SCALE);
-            }
-            if let Some(seed) = u64p(params, "seed") {
-                pattern.seed = seed as u32;
-            }
-
-            Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3] }
-        }
-        None => Source::Uniform([f32p(params, "value").unwrap_or(1.0).clamp(0.0, 1.0); 3]),
+        Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() }
+    } else {
+        Source::Uniform([f32p(params, "value").unwrap_or(1.0).clamp(0.0, 1.0); 3])
     };
+
+    // A scalar controls pattern frequency, while a two-axis scale places the new mask
+    let pattern_scale = matches!(source, Source::Procedural { .. }) && params.get("scale").is_some_and(Value::is_number);
+    let projection = projection_from_fields(params, CMD, None, !pattern_scale)?;
 
     push_effect(session, params, EffectKind::Fill { source, projection }, blend)
 }
@@ -377,17 +367,7 @@ fn generator_from(command: &str, params: &Value, generator: &mut Generator) -> R
     if let Some(contrast) = f32p(params, "contrast") {
         generator.global.contrast = contrast.clamp(0.0, 1.0);
     }
-    if let Some(value) = params.get("resolution") {
-        let name = value.as_str().ok_or_else(|| bad(command, "`resolution` must be a string"))?;
-        generator.resolution.mode = ResolutionMode::parse(name).ok_or_else(|| bad(command, format!("unknown resolution `{name}`")))?;
-    }
-    if let Some(custom) = u64p(params, "customResolution") {
-        generator.resolution.custom = custom.clamp(1, u64::from(OutputResolution::MAX_SIZE)) as u32;
-    }
-    if let Some(factor) = params.get("resolutionFactor") {
-        let factor = factor.as_i64().ok_or_else(|| bad(command, "`resolutionFactor` must be a whole number"))?;
-        generator.resolution.factor = factor.clamp(i64::from(*OutputResolution::FACTORS.start()), i64::from(*OutputResolution::FACTORS.end())) as i8;
-    }
+    crate::procedural_params::resolution_from(command, params, &mut generator.resolution)?;
 
     // A mode or sizes also give a curvature generator saved before detail sizes its detail
     let mode = params
@@ -401,6 +381,7 @@ fn generator_from(command: &str, params: &Value, generator: &mut Generator) -> R
     if mode.is_none() && weights.is_none() {
         return Ok(());
     }
+
     if !matches!(generator.kind, GeneratorKind::Curvature | GeneratorKind::EdgeWear) {
         return Err(bad(command, "only curvature and edge wear generators have a mode and detail sizes"));
     }
@@ -591,7 +572,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
     let anchor = match session.doc.project.effect(effect) {
         Some((owner, Effect { kind: EffectKind::Fill { source, .. }, .. })) => {
             let (current, channel) = match source {
-                Source::Anchor { anchor, channel } => (Some(*anchor), *channel),
+                Source::Anchor { anchor, channel, .. } => (Some(*anchor), *channel),
                 _ => (None, Channel::Height),
             };
             let channel_param = channel_param(CMD, params, "anchorChannel")?;
@@ -687,18 +668,25 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
             EffectKind::Filter(_) if swaps_filter => {}
             EffectKind::Filter(filter) => crate::filter_lib::apply(params, filter, CMD)?,
             EffectKind::Fill { source, projection } => {
+                // `uniform` picks the source, so it outranks settings that would edit the current pattern
+                let uniform = f32p(params, "uniform").filter(|_| strp(params, "procedural").is_none());
                 if let Some(anchor) = anchor {
                     *source = anchor;
                 } else if let Some(image) = image {
                     *source = image;
+                } else if let Some(value) = uniform {
+                    *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
+                } else if let Some(pattern) = fill_pattern(CMD, params, source)? {
+                    *source = pattern;
                 } else if let Some(value) = f32p(params, "value")
                     && matches!(source, Source::Uniform(_) | Source::Anchor { .. } | Source::Image { .. })
                 {
                     *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
                 }
 
-                // Preserve projection fields that the edit does not supply
-                *projection = projection_from(params, CMD, Some(&*projection))?;
+                // Pattern edits keep the mask's existing projection scale
+                let read_scale = !matches!(source, Source::Procedural { .. });
+                *projection = projection_from_fields(params, CMD, Some(projection), read_scale)?;
             }
             EffectKind::ColorSelection { colors, tolerance } => crate::color_selection_cmds::apply_params(params, colors, tolerance)?,
             EffectKind::Compare { tolerance, .. } => {
@@ -713,6 +701,36 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
     })?;
 
     Ok(Value::Null)
+}
+
+/// The pattern a mask fill reads after `params`: `procedural` picks one (a pattern of the kind it already reads keeps its settings), pattern settings alone edit the current one
+fn fill_pattern(command: &str, params: &Value, current: &Source) -> Result<Option<Source>> {
+    let (current, range) = match current {
+        Source::Procedural { pattern, low, high, .. } => (Some(pattern), (*low, *high)),
+        _ => (None, ([0.0; 3], [1.0; 3])),
+    };
+    let mut pattern = match strp(params, "procedural") {
+        Some(name) => {
+            let kind = ProceduralKind::parse(name).ok_or_else(|| bad(command, format!("unknown procedural `{name}`")))?;
+            current.filter(|pattern| pattern.kind == kind).cloned().unwrap_or_else(|| Procedural::new(kind))
+        }
+        None => {
+            let has_settings = crate::procedural_params::has_pattern_settings(params);
+            let edits_pattern = has_settings || ["scale", "seed", "contrast", "balance", "invert"].iter().any(|key| params.get(key).is_some());
+            match current {
+                Some(pattern) if edits_pattern => pattern.clone(),
+                None if has_settings => {
+                    return Err(bad(command, "the mask fill reads no pattern: give `procedural` with its settings"));
+                }
+                _ => return Ok(None),
+            }
+        }
+    };
+
+    crate::procedural_params::pattern_basics_from(params, &mut pattern);
+    crate::procedural_params::pattern_settings_from(command, params, &mut pattern)?;
+
+    Ok(Some(Source::Procedural { pattern, low: range.0, high: range.1, ramp: Vec::new() }))
 }
 
 /// The library id of the filter effect `effect` is, if it is one

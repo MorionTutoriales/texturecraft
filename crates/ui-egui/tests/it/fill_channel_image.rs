@@ -1,4 +1,4 @@
-//! A fill channel takes an image resource from its source menu.
+//! A fill channel takes an image resource from its source picker
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -6,26 +6,22 @@ use serde_json::json;
 use texturecraft_engine::core::{Channel, LayerId, LayerKind, Source};
 use texturecraft_ui_egui::TextureCraftApp;
 
-/// The Roughness channel's name in Properties (the rightmost "Roughness" label).
+/// The Roughness channel's source slot in Properties
 fn roughness<'a>(harness: &'a Harness<'_, TextureCraftApp>) -> egui_kittest::Node<'a> {
-    harness.get_all_by_label("Roughness").max_by(|a, b| a.rect().right().total_cmp(&b.rect().right())).unwrap()
+    harness.get_by_role_and_label(egui::Role::ComboBox, "Roughness")
 }
 
-/// Opens the source menu of the Roughness channel, which sits in the row of the channel's name.
-fn open_roughness_source_menu(harness: &mut Harness<'_, TextureCraftApp>) {
-    const ROW_CENTER_TOLERANCE_POINTS: f32 = 6.0;
-
-    // Allow the scroll animation to finish before locating the menu
+/// Opens the source picker of the Roughness channel from its slot
+fn open_roughness_source_picker(harness: &mut Harness<'_, TextureCraftApp>) {
+    // Allow the scroll animation to finish before the click
     roughness(harness).scroll_to_me();
     harness.run_steps(30);
-    let row = roughness(harness).rect().center().y;
-    let menu = harness.get_all_by_label(egui_phosphor::regular::DOTS_THREE).find(|n| (n.rect().center().y - row).abs() < ROW_CENTER_TOLERANCE_POINTS).unwrap();
-    menu.click();
-    harness.run_steps(2);
+    roughness(harness).click();
+    harness.run_steps(3);
 }
 
 #[test]
-fn a_fill_channel_takes_an_image_from_its_source_menu() {
+fn a_fill_channel_takes_an_image_from_its_source_picker() {
     let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
     let mut png_bytes = Vec::new();
     image::RgbaImage::from_pixel(4, 4, image::Rgba([90, 90, 90, 255])).write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png).unwrap();
@@ -38,8 +34,8 @@ fn a_fill_channel_takes_an_image_from_its_source_menu() {
     harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(4);
 
-    open_roughness_source_menu(&mut harness);
-    harness.get_by_label(&name).click();
+    open_roughness_source_picker(&mut harness);
+    harness.get_by_role_and_label(egui::Role::Button, &name).click();
     harness.run_steps(3);
 
     let LayerKind::Fill(fill) = &harness.state().session.doc.project.layers[&layer].kind else { panic!("a fill layer") };
@@ -48,7 +44,7 @@ fn a_fill_channel_takes_an_image_from_its_source_menu() {
 
 /// A resource that did not decode is not offered, since the commands that take an image refuse it.
 #[test]
-fn the_source_menu_offers_only_images_that_were_decoded() {
+fn the_source_picker_offers_only_images_that_were_decoded() {
     let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
     let mut png_bytes = Vec::new();
     image::RgbaImage::from_pixel(4, 4, image::Rgba([90, 90, 90, 255])).write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png).unwrap();
@@ -63,7 +59,7 @@ fn the_source_menu_offers_only_images_that_were_decoded() {
     harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(4);
 
-    open_roughness_source_menu(&mut harness);
+    open_roughness_source_picker(&mut harness);
 
     assert!(harness.query_by_label(&name).is_some(), "a decoded image is offered");
     assert!(harness.query_by_label("broken.png").is_none(), "an image that did not decode is not");
@@ -130,11 +126,12 @@ fn a_mask_fill_selects_an_image_edits_projection_and_returns_to_uniform() {
     harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(4);
 
-    harness.get_all_by_role(egui::Role::ComboBox).find(|node| node.value().as_deref() == Some("Uniform value")).unwrap().scroll_to_me();
+    // The mask fill's slot opens the source picker
+    harness.get_by_role_and_label(egui::Role::ComboBox, "Grayscale").scroll_to_me();
     harness.run_steps(30);
-    harness.get_all_by_role(egui::Role::ComboBox).find(|node| node.value().as_deref() == Some("Uniform value")).unwrap().click();
-    harness.run_steps(2);
-    harness.get_by_label(&image_name).click();
+    harness.get_by_role_and_label(egui::Role::ComboBox, "Grayscale").click();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(egui::Role::Button, &image_name).click();
     harness.run_steps(3);
 
     let effect = &harness.state().session.doc.project.effect(effect_id).unwrap().1.kind;
@@ -148,10 +145,10 @@ fn a_mask_fill_selects_an_image_edits_projection_and_returns_to_uniform() {
     let effect = &harness.state().session.doc.project.effect(effect_id).unwrap().1.kind;
     assert!(matches!(effect, EffectKind::Fill { projection: Projection::Triplanar { .. }, .. }));
 
-    let image_label = format!("Image: {image_name}");
-    harness.get_all_by_role(egui::Role::ComboBox).find(|node| node.value().as_deref() == Some(image_label.as_str())).unwrap().click();
-    harness.run_steps(2);
-    harness.get_by_label("Uniform value").click();
+    assert_eq!(harness.get_by_role_and_label(egui::Role::ComboBox, "Grayscale").value().as_deref(), Some(image_name.as_str()), "the slot names the image");
+    harness.get_by_role_and_label(egui::Role::ComboBox, "Grayscale").click();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(egui::Role::Button, "Uniform value").click();
     harness.run_steps(3);
 
     let effect = &harness.state().session.doc.project.effect(effect_id).unwrap().1.kind;

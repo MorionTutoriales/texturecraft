@@ -18,6 +18,27 @@ effect's input), so an agent can pick its input range from the data. `effect.mov
 index}` reorders an effect within its stack (0 = bottom) and `effect.duplicate {effect}` copies
 one just above itself. `effect.copy {effect?}` and `effect.cut {effect?}` put an effect on the
 layer clipboard, and `effect.paste {layer?, target?}` adds it to another layer's content or mask.
+`layer.select {layers: [id], layer?}` selects several layers of one texture set at once (`layer`
+is the active one), and `{layer, range: true}` / `{layer, toggle: true}` do what Shift+click and
+Ctrl+click do in the Layers panel. `layer.select {all: true}` (Ctrl+A with the pointer over the
+Layers panel) selects every shown row of the active texture set: the folder rows and the layers
+of open folders, not the layers of collapsed ones. `{layer, toggle: true}` on the only selected
+layer leaves nothing selected. `layer.visible {layers, layer}` gives every listed layer the
+opposite of `layer`'s visibility (the Layers panel's eye uses `{layer}` and acts on that layer
+only). `layer.group` puts the new folder at the place and in the folder of the topmost selected
+layer, the others in stack order; `layer.duplicate` puts the copies in one block above the
+topmost selected layer. Without `layer`, `layer.remove`, `layer.duplicate`,
+`layer.group` and `layer.visible` act on every selected layer; each of them and `layer.move
+{layers, above | index}` also take an explicit `layers` list. `session.inspect` lists the
+selection as `selectedLayers` (top row first).
+
+`mask.export {layer?, path}` writes the layer's evaluated mask as a 16-bit grayscale PNG at the
+texture set's resolution: black where the mesh does not cover the texture, with the orientation
+of the exported textures (top row first). A UV-tiled set writes one file per tile, each at its
+tile's size, with the tile number before the extension (`mask.1001.png`, `mask.1002.png`). The
+result is `{files}`. A layer without an enabled mask is an error. The layer menu's Export mask to
+file runs it; Copy mask to clipboard puts the same mask on the system clipboard as an 8-bit
+grayscale image (the whole tile atlas for a UV-tiled set).
 
 `effect.set {effect, filter: "blur", radius: 5}` replaces a filter in place, preserving its
 stack position, blend, opacity and visibility. Replacement filters start from defaults plus
@@ -29,9 +50,29 @@ must be added separately with `effect.add.filter`. A successful replacement is o
 a rejected replacement changes nothing.
 
 `edit.undo {steps?}` and `edit.redo {steps?}` go back or forward several steps at once (as far
-as the history reaches); `edit.history` lists the steps done and the undone ones, next first.
+as the history reaches); `edit.history` lists the steps done and the undone ones, next first. Step names are English; a stroke is named by tool and layer (`Paint on Rust`,
+`Clone on Rust`, `Erase mask of Rust`).
 Any command takes `merge: true` to fold its edit into the previous undo step when that step has
 the same label: a drag that applies a value on every frame stays one step.
+
+A colour param is `[r, g, b]` in linear 0..1, or `"#rrggbb"` in sRGB, which is converted to
+linear. The same digits are two different colours: `"#c8102e"` is `[0.578, 0.005, 0.027]`, while
+`[0.784, 0.063, 0.180]` (its hex digits over 255) paints the lighter `#e54776`. Pass a colour from
+a design tool or a brand guide as hex. A single number is a linear grey.
+For a colour selection, `effect.set` accepts only linear `[r, g, b]` arrays in its `colors` list.
+
+`tool.cloneSource {uv: [u, v]}` (or `{x, y}` for a point on the mesh, or `{clear: true}`) sets the
+Clone tool's source. The source belongs to the active texture set: selecting another texture set
+(`textureSet.select`, or `layer.select` of a layer in another set) clears it. `tool.brush
+{cloneAligned}` (default `true`) chooses how later strokes use it: aligned keeps the offset the
+first stroke fixed, so the source moves along with the brush; `false` makes every stroke start
+sampling at the source point. Changing `cloneAligned` forgets the offset of earlier strokes.
+`tool.brush` takes the alpha's shared parameters next to `alpha`: `alphaSizeX` and `alphaSizeY`
+(5..100, percent of the stamp the alpha fills, default 100), `alphaRoundness` (0..100, only for the
+procedural Round alpha: 100 is a circle, 0 a square), `alphaContrast` (1..8, 1 leaves the values
+alone) and `alphaInvert` (swaps paint and no paint inside the stamp square). They apply to
+procedural, library and imported alphas alike and are returned by `tool.brush` with the other
+values. The alpha's rotation is the brush `angle`.
 
 Bake mode applies edits in Common Settings and Mesh Map Settings to every texture set. Each
 set keeps its own enabled mesh-map checkboxes and Include in Bake flag. Edits update only the
@@ -65,6 +106,14 @@ Tile choices are saved and undoable. Unchecked tiles retain their previous baked
 if output size changes, or neutral values when no previous map exists. A running bake uses the
 tile selection captured when its worker started. Sets with no checked tiles are skipped; their
 geometry still contributes to occlusion when baking other tiles.
+
+`view.solo {layer?, ignoreMask?}` shows one layer alone in the viewport, as if the other layers
+of its texture set were hidden (`layer` defaults to the selected layer, `layer: null` ends the
+solo; `ignoreMask: true` draws the layer, and the folders around it, at full coverage; other
+texture sets are unchanged). It changes only the view: nothing enters the undo history, the
+project file or an export (`file.exportTextures` and the CLI export the whole stack, then the solo comes
+back), and removing the soloed layer ends it. `session.inspect` reports it as `solo`
+(`{layer, ignoreMask}` or `null`).
 
 ## Control channel (desktop app)
 
@@ -106,7 +155,8 @@ keeps its state in a throwaway file.
 | `session.inspect` | | project, mesh, texture sets, layer stack, tool, camera, display, history |
 | `ui.inspect` | | UI state, viewport rect, fps, bake progress (`baking`, 0..1), the running bake's stage (`bakeStatus`, e.g. "Baking Ambient Occlusion (2/4)") and live preview (`bakePreview`, see *Live bake preview*), toasts, `titleBar` (who draws the title bar this run: `app`, `integrated` on macOS, or `system`) |
 | `ui.menu.list` | | the menu catalog: `{menu, submenu, label, id, shortcut, implemented, enabled}` |
-| `ui.menu.invoke` | `{id}` | behaves like a menu click (may open a window) |
+| `ui.menu.invoke` | `{id}` | behaves like a menu click (may open a window; `ui.resetUi` opens its question). `{"id": "ui.layout.apply", "name": "<layout>"}` switches to a panel layout saved under Window > Layouts (panels only; mode, zoom and wireframes stay) and errors when no layout has that name |
+| `ui.reset` | | resets the panels, view layout, zoom and every other view setting at once, without the question the Reset UI menu item asks; settings and shortcuts stay |
 | `ui.bake.start` | `{ts?: index \| [indices]}` (default: the sets ticked in Bake mode) | Opens Bake mode and bakes in the background like the Bake button: the 3D view shows the maps landing on the model as they finish (see *Live bake preview*). → the `bake.preview` state. Errors when a bake is already running |
 | `ui.bake.cancel` | | Stops the running bake; the set being baked keeps the maps it had, sets already finished stay applied, and the previous view mode comes back |
 | `ui.set` | fields of the UI state, e.g. `{"layout": "Only3D"}`; `dock` is the panel layout, a craft-ui docking `Workspace` (`{version, layout: {root, floating}, hidden}`; `root` is a tree of `Split`, `Tabs` and `Stack` nodes over the panels `Viewport`, `Assets`, `TextureSetList`, `Layers`, `TextureSetSettings`, `Properties`, `Display`, `Shader`, `History` and `Log`; `hidden` lists where each closed panel was, so reopening it puts it back; a layout that does not read or has no docked `Viewport` becomes the default), `prefs` the settings (`{"language": "ja", "viewport_texture": 1, "brightness": "light", "accent": "blue"}`; missing fields take their defaults; `brightness` is `dark`, `mediumDark` (default), `mediumLight` or `light`, `accent` `copper` (default), `coral`, `blue`, `violet`, `green`, `amber` or `pink`, applied on the next frame; `system_title_bar` `true` has the system draw the title bar from the next start), `keymap` the custom shortcuts (`{"file.save": "F5"}`, `""` unbinds) | `null` |
@@ -211,6 +261,8 @@ Through `command_run`, every `file.*` command but `file.close` and `file.removeU
 `file.reimportMesh` without a `path`) is refused, and so is any command given a `path` or `dir`, at the top level or in
 a `files` entry (`resource.import`, `material.save`, `material.load`, `textureSet.meshMap.import`, …), in both modes: use the workspace tools below. `resource.text`
 takes a font family, not a path: it reads only the system's font folders.
+
+`file.close` leaves no project open: `session.inspect` then reports `projectOpen: false`, `command.list` marks every command but the project-independent ones as not enabled: the ones that open or create a project (`file.open`, `file.new`, `project.new`, `project.sample`), `project.inspect`, `viewport.frame`, `project.templates`, the `export.preset*` commands (`export.presets`, `export.preset.get`, `export.preset.save`, `export.preset.remove`) and the library and preset listings (`brush.preset.list`, `alpha.list`, `filter.list`, `material.list`, `mask.smart.list`, `text.fonts`), each still subject to its own enabled check. The rest are refused with "no project is open" until a project is opened or created. A `texturecraft --control` run starts with the sample project (an empty material ball with `--empty`); the app without `--control` starts with no project.
 
 | Tool | Params | Notes |
 |---|---|---|
@@ -381,6 +433,46 @@ Maps are found by file name, case-insensitively, from the last known word in the
 In the app: File › Import PBR texture folder... or drop a folder, a `.zip` or several map files on the
 window. The dialog shows the maps found, lets you pick between candidates, set the normal convention and
 projection, and keep the material in the library (shelf › Materials).
+
+## Smart masks
+
+`mask.smart.list` lists the built-in smart masks and `mask.smart.apply {name, layer?}` replaces a
+layer's mask with one. A user smart mask is a layer's mask saved as a `.tcmask` file (the `.tcraft`
+container holding one layer with the mask): all effects with their parameters, painted pixels and the
+images they read.
+
+| Command | Params |
+|---|---|
+| `mask.smart.create` | `{layer?, path, name?}`: save the layer's mask (an instance without its own mask saves its source's) to `path` (`.tcmask` is appended if missing, folders are made); `name` defaults to the layer's name. Returns `{path}` |
+| `mask.smart.apply` | `{path, layer?}`: replace the layer's mask with the one in a `.tcmask` file (one undo step; images it needs are added to the project, painted pixels are fitted to the texture set) |
+
+In the app: right-click a layer > *Create smart mask* saves into the library folder next to the smart
+materials (never over an earlier file), and the shelf lists it under *My smart masks* (Smart masks tab,
+*Your assets*): click it or drop it on a layer. Like `material.save`, both forms with `path` are not
+available through `command_run` on the MCP server, which rejects host paths.
+
+## Geometry decals
+
+`layer.add.decal {image, ...}` places an image as a decal and `layer.decal.set {layer? | effect?, ...}` edits
+one (`command.list` shows every param). Three of them keep the image's look:
+
+- `keepProportions: true` keeps the image's aspect (the decal's current ratio when it shows no image). A
+  height (`size: 0.2`) sets the width; a `[w, h]` pair or no `size` sets the height from the width. It acts
+  in that call only and is not saved: the desktop Properties panel's "Keep proportions" box (on for every
+  decal) sends it with each Width or Height edit.
+- `flipU` / `flipV`: mirror the image left to right / top to bottom inside the frame. They are saved with
+  the decal (`flip: [u, v]`, left out while both are false, so older projects load and save unchanged).
+
+`layer.add.decal {image, position?, normal?, up?, size?, rotation?, depth?, symmetry?, symmetryFlip?}`
+places an image on the surface; `layer.decal.set` moves, resizes or turns it later. `symmetry`
+(`x`, `y`, `z` or `off`) adds a mirrored copy on the other side of the mesh: the decal reflected
+through the plane across the mesh center, perpendicular to that axis. The copy is part of the
+decal, not a second layer, so it follows every later edit and is saved with the project.
+`symmetryFlip` (`none`, `u`, `v`) additionally flips the copy's image (U swaps left and right,
+V swaps top and bottom). `symmetryOffset` moves the mirror plane along the axis, in world units from the mesh center (default 0, kept within the mesh, as the brush symmetry's offset). With a copy on, each of the three params may be sent alone and keeps the others.
+`session.inspect` shows the setting as `decal.symmetry` (`{axis: 0|1|2, flip, offset?}`, absent without
+a copy).
+
 ## Camera bookmarks
 
 Saved cameras (`Project.cameras`, stored in the `.tcraft` file) are the camera bookmarks.
@@ -390,14 +482,31 @@ is at), `camera.select {index? | name?}` restores one, `camera.rename {index? | 
 go to the first nine. Commands jump straight to the view; the desktop UI glides there over about a third
 of a second.
 
+## Framing the view
+
+`viewport.frame {target?: "all" | "selection"}` points the camera at the bounding box of the whole mesh
+(`"all"`, the default, F) or of the active texture set's geometry only (`"selection"`), keeping the
+current angles. The orbit pivot (`camera.get` `target`) is the framed center, so `camera.orbit` and the
+Alt+drag orbit turn around the object being painted even with a floor plane or other helper geometry in
+the mesh. `viewport.frameSelection` (Shift+F) is the same as `target: "selection"`; a set with no triangles
+frames the whole mesh. Both return the camera like `camera.get`.
+
+## Camera views and projection
+
+`camera.view {view}` looks at the mesh from one side (`front` from +Z, `back`, `left` from -X,
+`right`, `top` and `bottom` at the orbit's ±89° pitch limit) and frames it; the projection stays.
+`camera.view.front` … `camera.view.bottom` do the same without params (Viewport menu, no default
+shortcut, bindable in Settings ▸ Keyboard). `camera.perspective` (F5) and `camera.orthographic` (F6)
+change only the projection; position and rotation stay. None of them is an undo step. In the 3D
+view, Alt+Shift+left drag orbits in 90° steps.
+
 ## MaterialCraft materials
 
-A `.mcmat` portable material (MaterialCraft's format, read here by `formats::mcmat`; the manifest is
-documented in MaterialCraft's `docs/control-protocol.md` § Portable materials) becomes a fill layer
-whose channel sources are its cooked maps and whose `link` (shown by `project.inspect`) holds the
-graph's exposed inputs, presets and image inputs. Both apps use the shared `craft-mcmat` container.
-Versions 1 and 2 are accepted; version 1 contains a legacy JSON `.mcraft` source that current
-MaterialCraft cannot reopen, so its cooked maps remain usable but re-cooking needs a compatible older version.
+A v3 `.mcmat` holds a published SBS graph and its source assets. TextureCraft uses the shared `craft-mcmat` reader and cooks the archive through `materialcraft-cli`. The resulting fill stores its channel textures and the original archive in the project. Linked cooks use the Settings percentage of available RAM. A cook that exceeds the estimated budget reports the required and configured byte counts without replacing the current fill. Its exposed values, presets and mesh-map inputs appear in `project.inspect`. Republish older MCMAT files from their original authoring project. Procedural imports and re-cooks require the desktop CLI. Saved projects retain their baked maps for use in the browser.
+
+Saving and linked cooks share one reservation for the configured RAM allowance. Autosave waits
+until a cook releases the reservation. An explicit save or cook that conflicts with the other
+operation returns a busy error and can be retried.
 
 | Command | Params |
 |---|---|
@@ -405,9 +514,9 @@ MaterialCraft cannot reopen, so its cooked maps remain usable but re-cooking nee
 | `material.link.set` | `{layer?, id, value, cook?: true}`: a number, `[..]`, a bool, `"#rrggbb"` or a typed `{"t", "v"}`; re-cooks unless `cook: false` |
 | `material.link.preset` | `{layer?, name, cook?: true}` |
 | `material.link.cook` | `{layer?}`: re-cook at the texture set's resolution with its baked mesh maps (after a bake or a resize) |
-| `material.link.saveSource` | `{layer?, path}`: the `.mcraft` or `.sbs` source, to open in MaterialCraft |
+| `material.link.saveSource` | `{layer?, path}`: the original linked source with its `.mcmat`, `.mcraft` or `.sbs` extension |
 
-Re-cooks use `materialcraft-cli batch` to open the saved graph by name and run `file.exportMaterial` with its size, values and inputs:
+For a 1024-pixel texture set, TextureCraft requests `materialcraft-cli export source.mcmat maps --profile maps --size 1024x1024` with repeated `--set` and `--input` arguments. It discovers the published image inputs through `info` when the texture set supplies mesh maps. The desktop worker decodes the returned maps before installing the fill at its original drop target. The executable is resolved from
 `$MATERIALCRAFT_CLI`, else `materialcraft-cli` next to the TextureCraft executable, else on `PATH`
 (the app is `$MATERIALCRAFT` / `materialcraft`). Baked maps feed graph input nodes whose identifier
 matches the map's shared id (`ambientOcclusion`, `curvature`, `thickness`, `position`,

@@ -11,6 +11,7 @@ use texturecraft_texel::{TILE, TileImage, from_u16, to_u16};
 
 use crate::brush::Shape;
 use crate::pickup::Pickup;
+use crate::stamp_source::StampSource;
 use crate::stroke::Stamp;
 use crate::visibility::EyeDepth;
 
@@ -52,7 +53,7 @@ impl StrokeCanvas {
     /// Blend the gathered stamp texels (stamp center `center` in texels) into the stroke: the
     /// quick mask scales them, then the pickup deposits its values or the alpha accumulates
     /// ("over": `m = a + m·(1 − a)`).
-    fn add_stamp(&mut self, center: [f32; 2]) {
+    fn add_stamp(&mut self, center: [f32; 2], source: Option<StampSource>) {
         let mut texels = std::mem::take(&mut self.texels);
         if let Some((mask, invert)) = &self.limit {
             for t in &mut texels {
@@ -61,7 +62,7 @@ impl StrokeCanvas {
             }
         }
         let painted = match &mut self.pickup {
-            Some(p) => p.stamp(&mut self.alpha, &texels, center),
+            Some(p) => p.stamp(&mut self.alpha, &texels, center, source),
             None => {
                 for &(x, y, a) in &texels {
                     let m = from_u16(self.alpha.get(x, y)[0]);
@@ -216,7 +217,7 @@ pub fn rasterize(canvas: &mut StrokeCanvas, context: &RasterCtx, stamps: &[Stamp
             canvas.texels.extend(texels);
         }
 
-        canvas.add_stamp(center.0);
+        canvas.add_stamp(center.0, stamp.source);
     }
 }
 
@@ -338,7 +339,7 @@ pub fn fill_coverage(canvas: &mut StrokeCanvas, gbuf: &UvGBuffer, coverage: impl
             (a > 0.0).then_some(((i as u32) % w, (i as u32) / w, a))
         })
         .collect();
-    canvas.add_stamp([0.0; 2]);
+    canvas.add_stamp([0.0; 2], None);
 }
 
 #[cfg(test)]
@@ -383,7 +384,7 @@ mod tests {
             eye: camera.eye(),
             backface_culling: false,
             angle_fade: (89.0, 90.0),
-            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, params: Default::default(), level: 0 },
         };
         let stamp = Stamp {
             center: Vec3::new(0.0, 0.03, 0.0),
@@ -428,7 +429,7 @@ mod tests {
             eye: camera.eye(),
             backface_culling: true,
             angle_fade: (89.0, 90.0),
-            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, params: Default::default(), level: 0 },
         };
         let point = Vec3::ZERO;
         let to_eye = (camera.eye() - point).normalize();
@@ -459,7 +460,7 @@ mod tests {
             eye: camera.eye(),
             backface_culling: true,
             angle_fade: (89.0, 90.0),
-            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, params: Default::default(), level: 0 },
         };
         let point = Vec3::new(1.0, 0.0, 0.0);
         let to_eye = (camera.eye() - point).normalize();
@@ -485,7 +486,7 @@ mod tests {
             eye: camera.eye(),
             backface_culling: false,
             angle_fade: (89.0, 90.0),
-            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, params: Default::default(), level: 0 },
         };
         let to_eye = -camera.forward();
         let behind = context.eye + to_eye;
@@ -547,7 +548,7 @@ mod tests {
             eye: camera.eye(),
             backface_culling: culling,
             angle_fade: (89.0, 90.0),
-            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, params: Default::default(), level: 0 },
         };
         let stamp =
             Stamp { center, normal: Vec3::Y, tangent: Vec3::X, bitangent: Vec3::Z, radius, flow: 1.0, hardness: 0.9, depth: 1.0, seed: 0, source: None };
@@ -676,7 +677,7 @@ mod tests {
             eye: camera.eye(),
             backface_culling: false,
             angle_fade: (89.0, 90.0),
-            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, params: Default::default(), level: 0 },
         };
 
         // A silhouette normal is perpendicular to the direction from the surface to the eye
@@ -746,7 +747,7 @@ mod tests {
             eye: Vec3::new(0.0, 5.0, 0.0),
             backface_culling: true,
             angle_fade: (70.0, 85.0),
-            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, params: Default::default(), level: 0 },
         };
         let stamp = Stamp {
             center: Vec3::ZERO,
@@ -789,6 +790,9 @@ pub struct UvStamp {
     pub flow: f32,
     pub hardness: f32,
     pub seed: u32,
+    /// The symmetry copy this dab belongs to (None: the stroke itself), so a smudge's copies each
+    /// drag their own trail as in the 3D view
+    pub source: Option<StampSource>,
 }
 
 /// Accumulate UV-space stamps into `canvas` (only texels covered by the texture set).
@@ -799,6 +803,7 @@ pub fn rasterize_uv(canvas: &mut StrokeCanvas, gbuf: &UvGBuffer, shape: Shape, s
         if s.radius.is_nan() || s.radius <= 0.0 || !s.center.is_finite() {
             continue;
         }
+
         let (cx, cy, r) = (s.center.x * w as f32, s.center.y * h as f32, s.radius * w as f32);
         let x0 = (cx - r * 1.42).floor().max(0.0) as u32;
         let x1 = ((cx + r * 1.42).ceil().max(0.0) as u32).min(w);
@@ -811,7 +816,8 @@ pub fn rasterize_uv(canvas: &mut StrokeCanvas, gbuf: &UvGBuffer, shape: Shape, s
                 if gbuf.tri.get((y * w + x) as usize).copied().unwrap_or(NO_TRI) == NO_TRI {
                     continue;
                 }
-                // Local frame with y up on screen (texel rows grow downward), as in the 3D view.
+
+                // Local frame with y up on screen (texel rows grow downward), as in the 3D view
                 let (dx, dy) = ((x as f32 + 0.5 - cx) / r, (cy - y as f32 - 0.5) / r);
                 let (lx, ly) = (dx * cs + dy * sn, -dx * sn + dy * cs);
                 let a = shape.sample(lx, ly, s.hardness, s.seed) * s.flow;
@@ -820,6 +826,6 @@ pub fn rasterize_uv(canvas: &mut StrokeCanvas, gbuf: &UvGBuffer, shape: Shape, s
                 }
             }
         }
-        canvas.add_stamp([cx, cy]);
+        canvas.add_stamp([cx, cy], s.source);
     }
 }

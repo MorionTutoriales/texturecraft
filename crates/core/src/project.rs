@@ -562,6 +562,11 @@ impl Project {
         }
         let (ts, parent, i) = self.locate(id).ok_or(CoreError::NoLayer(id))?;
         if let Some(t) = target {
+            let (target_set, _, _) = self.locate(t).ok_or(CoreError::NoLayer(t))?;
+            if target_set != ts {
+                return Err(CoreError::Invalid("layer move target belongs to another texture set".into()));
+            }
+
             let mut sub = Vec::new();
             self.collect_subtree(id, 0, &mut sub);
             if sub.contains(&t) {
@@ -791,7 +796,7 @@ mod tests {
         ];
         let id = p.insert_layer(0, l, None, false).unwrap();
         let mut top = paint(&mut p, "y");
-        let source = Source::Anchor { anchor, channel: Channel::Height };
+        let source = Source::Anchor { anchor, channel: Channel::Height, ramp: Vec::new() };
         top.mask = Some(Mask {
             effects: vec![Effect::new(p.alloc_id(), EffectKind::Fill { source, projection: Projection::default() })],
             ..Mask::new(MaskBackground::Black)
@@ -801,7 +806,8 @@ mod tests {
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
         assert_eq!(back.effect(anchor).map(|(owner, _)| owner), Some(id));
-        // Projects saved before content effects existed load with empty stacks.
+
+        // Projects saved before content effects existed load with empty stacks
         let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
         for l in v["layers"].as_object_mut().unwrap().values_mut() {
             l.as_object_mut().unwrap().remove("content_effects");
