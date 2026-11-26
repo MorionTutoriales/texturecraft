@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 texturecraft-core = { workspace = true }
 texturecraft-texel = { workspace = true }
 texturecraft-geom = { workspace = true }
@@ -36,5 +37,6 @@ tokio = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+craft-usd.workspace = true
 image = { workspace = true }
 zip = { workspace = true }

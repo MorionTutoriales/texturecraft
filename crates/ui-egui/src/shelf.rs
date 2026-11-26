@@ -414,18 +414,7 @@ pub(crate) fn tiles(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
     ui.add_space(SECTION_GAP);
 }
 
-/// The distinct categories of `items`, in order of first appearance.
-pub(crate) fn categories<T>(items: &[T], category: impl Fn(&T) -> &'static str) -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for c in items.iter().map(category) {
-        if !out.contains(&c) {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// Read the user's saved smart materials (desktop library folder) unless they are already listed
+/// Read the user's saved smart materials (desktop library folder and the added library locations) unless they are already listed
 #[cfg(not(target_arch = "wasm32"))]
 fn scan_library(app: &mut TextureCraftApp) {
     if app.library.is_some() {
@@ -436,9 +425,19 @@ fn scan_library(app: &mut TextureCraftApp) {
         path.extension()
             .is_some_and(|extension| extension == "tcmat" || extension == MCMAT_EXT || extension == texturecraft_engine::smart_masks::SMART_MASK_EXT)
     };
-    let mut files: Vec<std::path::PathBuf> =
-        std::fs::read_dir(crate::library_dir()).map(|dir| dir.flatten().map(|entry| entry.path()).filter(saved_asset).collect()).unwrap_or_default();
+
+    // The library folder, then each location added in Settings > Libraries
+    let added = app.ui.prefs.libraries.iter().map(|location| std::path::PathBuf::from(location.path.trim()));
+    let mut files: Vec<std::path::PathBuf> = std::iter::once(crate::library_dir())
+        .chain(added.filter(|path| path.is_absolute()))
+        .filter_map(|folder| std::fs::read_dir(folder).ok())
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(saved_asset)
+        .collect();
     files.sort();
+    files.dedup();
     // Changed and removed files lose their cached previews before the new scan is published
     app.thumbs.scan_user_materials(&files);
     app.library = Some(files);
@@ -456,26 +455,27 @@ fn saved_material_name(path: &std::path::Path) -> &str {
 #[cfg(not(target_arch = "wasm32"))]
 fn library(app: &mut TextureCraftApp, ui: &mut Ui, filter: &str, masks: bool) {
     let tokens = Tokens::get(ui.ctx());
-    let files: Vec<_> = app.library.clone().unwrap_or_default().into_iter().filter(|path| is_saved_mask(path) == masks).collect();
-    let shown: Vec<_> = files.iter().filter(|path| matches(filter, &[saved_material_name(path)])).collect();
-    if !filter.is_empty() && shown.is_empty() {
+    let mut paths = app.library.iter().flatten().filter(|path| is_saved_mask(path) == masks && matches(filter, &[saved_material_name(path)])).peekable();
+    let has_rows = paths.peek().is_some();
+    if !filter.is_empty() && !has_rows {
         return;
     }
 
-    ui.horizontal(|ui| {
-        header(ui, if masks { tr("My smart masks") } else { tr("My smart materials") });
-        if ui.small_button(ic::ARROW_CLOCKWISE).on_hover_text(tr("Rescan the library folder")).clicked() {
-            app.library = None;
-        }
-    });
-    if files.is_empty() {
+    let rescan = ui
+        .horizontal(|ui| {
+            header(ui, if masks { tr("My smart masks") } else { tr("My smart materials") });
+            ui.small_button(ic::ARROW_CLOCKWISE).on_hover_text(tr("Rescan the library folder")).clicked()
+        })
+        .inner;
+    if !has_rows {
         let hint = if masks { tr("Right-click a layer > Create smart mask") } else { tr("Right-click a layer > Create smart material") };
         ui.label(RichText::new(hint).size(HINT_SIZE).color(tokens.text_dim));
     }
 
+    let mut selected = Vec::new();
+
     // Saved smart materials get preview tiles; masks and linked MaterialCraft materials stay rows
-    let (smart_materials, rows): (Vec<_>, Vec<_>) =
-        if masks { (Vec::new(), shown) } else { shown.into_iter().partition(|path| path.extension().is_some_and(|ext| ext == SMART_MATERIAL_EXT)) };
+    let (smart_materials, rows): (Vec<_>, Vec<_>) = paths.partition(|path| !masks && path.extension().is_some_and(|ext| ext == SMART_MATERIAL_EXT));
     let view = app.ui.shelf_view;
     tiles(ui, |ui| {
         for path in smart_materials {
@@ -483,13 +483,12 @@ fn library(app: &mut TextureCraftApp, ui: &mut Ui, filter: &str, masks: bool) {
             let asset = Asset::Library(path.display().to_string());
             let texture = |ui: &Ui, thumbs: &mut Thumbs| thumbs.user_material(ui.ctx(), path);
             if tile_in_view(ui, &mut app.thumbs, texture, |_| Some(ShelfPreview::UserMaterial(path.clone())), label, Some(&asset), view).clicked() {
-                apply(app, &asset);
+                selected.push(asset);
             }
         }
     });
     for path in rows {
-        let (label, location) = (saved_material_name(path).to_string(), path.display().to_string());
-        let asset = if masks { Asset::SavedMask(location) } else { Asset::Library(location) };
+        let label = saved_material_name(path);
 
         // MaterialCraft materials (sent from MaterialCraft) show a graph
         let glyph = if masks {
@@ -507,13 +506,25 @@ fn library(app: &mut TextureCraftApp, ui: &mut Ui, filter: &str, masks: bool) {
             };
             ui.label(crate::i18n::trf(hover, &[("file", &path.display())]));
         });
-        if response.drag_started() {
-            response.dnd_set_drag_payload(ShelfDrag { asset: asset.clone(), label });
-        }
-        if response.clicked() {
-            apply(app, &asset);
+        if response.drag_started() || response.clicked() {
+            let location = path.display().to_string();
+            let asset = if masks { Asset::SavedMask(location) } else { Asset::Library(location) };
+            if response.drag_started() {
+                response.dnd_set_drag_payload(ShelfDrag { asset, label: label.to_owned() });
+            } else {
+                selected.push(asset);
+            }
         }
     }
+
+    if rescan {
+        app.library = None;
+    }
+
+    for asset in selected {
+        apply(app, &asset);
+    }
+
     ui.add_space(SECTION_GAP);
 }
 
@@ -791,5 +802,35 @@ mod tests {
         assert_eq!(galley.rows.len(), 1);
         assert!(galley.size().x <= width);
         assert_eq!(galley.rows[0].glyphs.last().map(|glyph| glyph.chr), Some('…'));
+    }
+
+    /// Saved smart materials in a location added in Settings > Libraries are listed with the library folder's
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_shelf_lists_saved_materials_of_added_library_locations() {
+        let dir = std::env::temp_dir().join(format!("tc-shelf-added-library-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = dir.join("Rusty Plate.tcmat");
+        std::fs::write(&saved, b"").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"").unwrap();
+        let session = texturecraft_engine::Session::closed().unwrap();
+        let context = egui::Context::default();
+        let mut app = TextureCraftApp::new(&eframe::CreationContext::_new_kittest(context.clone()), session);
+        scan_library(&mut app);
+
+        let prefs = serde_json::json!({"prefs": {"libraries": [{"name": "plates", "path": dir}]}});
+        assert_eq!(crate::control::handle(&mut app, &context, "ui.set", &prefs)["ok"], true);
+        scan_library(&mut app);
+
+        let listed = app.library.as_ref().unwrap();
+        assert!(listed.contains(&saved), "{listed:?}");
+        assert!(!listed.iter().any(|path| path.extension().is_some_and(|extension| extension == "txt")), "only saved assets are listed");
+
+        let prefs = serde_json::json!({"prefs": {"libraries": []}});
+        assert_eq!(crate::control::handle(&mut app, &context, "ui.set", &prefs)["ok"], true);
+        scan_library(&mut app);
+
+        assert!(!app.library.as_ref().unwrap().contains(&saved));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
