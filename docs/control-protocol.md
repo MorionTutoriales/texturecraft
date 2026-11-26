@@ -240,7 +240,7 @@ keeps its state in a throwaway file.
 | `ui.menu.invoke` id `ui.saveAsTemplate` | `{id}` | File > More Save Options > Save As Template opens a save dialog in the user templates folder. The choice supplies the file path and template name to `project.template.save`. `ui.saveReduced` (Save and Reduce File Size) is listed as not implemented and not enabled |
 | `ui.menu.invoke` ids `ui.help.releaseNotes`, `ui.help.showLog`, `ui.help.exportLog` | `{id}` | Help > Release Notes opens the releases page in the browser; Help > Show Log opens the current desktop run's rolling `log.txt` in the system text-file handler; Help > Export Log exports the session log with each entry’s recorded UTC time, severity and source (a save dialog on desktop with a `Log_TextureCraft_<version>_<date>_<os>_<gpuMode>.txt` name, a download on the web) |
 | `ui.menu.invoke` id `ui.wireframe` | `{id}` | Show mesh wireframe: shows or hides the mesh wireframe in the 3D and 2D views (the Display Settings check box). It has no menu entry and no default key; bind it in Settings > Shortcuts. The key bindings `camera.next` and `camera.previous` (Select next camera `>`, Select previous camera `<`) and `ui.mode.bake` (F8) run the same commands as before |
-| `ui.reset` | | resets the panels, view layout, zoom and every other view setting at once, without the question the Reset UI menu item asks; settings and shortcuts stay |
+| `ui.reset` | | resets the panels, view settings and interface language without asking for confirmation. Other preferences and shortcuts stay |
 | `ui.bake.start` | `{ts?: index \| [indices]}` (default: the sets ticked in Bake mode) | Opens Bake mode and bakes in the background like the Bake button: the 3D view shows the maps landing on the model as they finish (see *Live bake preview*). → the `bake.preview` state. Errors when a bake is already running |
 | `ui.bake.cancel` | | Stops the running bake; the set being baked keeps the maps it had, sets already finished stay applied, and the previous view mode comes back |
 | `ui.set` | fields of the UI state, e.g. `{"layout": "Only3D"}`; `dock` is the panel layout, a craft-ui docking `Workspace` (`{version, layout: {root, floating}, hidden}`; `root` is a tree of `Split`, `Tabs` and `Stack` nodes over the panels `Viewport`, `Assets`, `TextureSetList`, `Layers`, `TextureSetSettings`, `Properties`, `Display`, `Shader`, `History`, `Log`, `BakingLog`, `MeshMapBakers`, `BakeMaps`, `BakeSettings`, `Export` and `Renderer` (a floating window holding one right-bar panel is that panel undocked); `hidden` lists where each closed panel was, so reopening it puts it back; a layout that does not read or has no docked `Viewport` becomes the default), `prefs` the settings (`{"language": "ja", "viewport_texture": 1, "brightness": "light", "accent": "blue"}`; missing fields take their defaults; `brightness` is `dark`, `mediumDark` (default), `mediumLight` or `light`, `accent` `copper` (default), `coral`, `blue`, `violet`, `green`, `amber` or `pink`, applied on the next frame; `system_title_bar` `true` has the system draw the title bar from the next start), `keymap` the custom shortcuts (`{"file.save": "F5"}`, `""` unbinds), `log_channel` the Log panel's tab (`General` or `Assets`) | `null` |
@@ -254,6 +254,7 @@ The empty-project menus keep Recent Projects openable with Clear disabled when t
 `ui.recent.clear` clears that list. More Save Options is disabled until a project is open.
 Help > Shortcuts list opens Settings on its Shortcuts page. Window > Reset UI restores the
 Assets, Layers, Properties, Texture Set List and Texture Set Settings panels and both toolbars.
+It also restores Default (System Language).
 Baking Log and the bake/render settings views are disabled without a project. Import resources
 can open its dialog on desktop without a project; importing still requires an open project,
 and the dialog explains that asset-library import is not available yet.
@@ -339,10 +340,16 @@ Other preferences set through `ui.set {"prefs": {...}}`: `language` (`""` follow
 language), `work_threads` (worker threads for painting, baking and export; 0 uses every logical
 CPU; read at startup), `rotation_speed` (default 2), `zoom_speed` and `wheel_speed` (default 1,
 each from 0.1 to 10) with `zoom_inverse` and `wheel_inverse`, `gpu_raytracing` (false keeps bake
-rays on the CPU) and `libraries` (the folders the shelf scans for saved smart materials and masks).
+rays on the CPU), `show_world_axes` (the 3D view's X, Y and Z corner, default true) and `libraries`
+(the folders the shelf scans for saved smart materials and masks). `live_preview_baking` enables
+the automatic Bake mode map preview when the panel's Map Preview switch is also on.
+`show_keyboard_helper`, `only_selected_material_when_painting`, `save_preprocessed_scene_files` and
+`local_cache_directory` are stored preferences for future use. For `local_cache_directory`, an
+empty or relative path selects the app's per-user cache directory, or the profile cache for Nightly.
 For example, the `libraries` field can contain `[{"name": "Studio", "path": "/assets/studio"}]`.
 Use an absolute path on the host running TextureCraft. To change one preference, read `state.prefs`
 with `ui.inspect`, update that field and send the full `prefs` object to `ui.set`.
+A `prefs` object without `language` sets the system language (`""`), the default.
 
 ## MCP server
 
