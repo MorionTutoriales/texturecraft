@@ -1575,3 +1575,47 @@ fn write_files_accepts_a_long_nested_folder_and_stem() {
     assert!(paths[0].is_file());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn names_keep_other_alphabets_and_replace_what_disguises_or_breaks_a_file() {
+    for kept in ["身体", "Óxido", "O\u{301}xido", "ผิว", "голова"] {
+        assert_eq!(sanitize_file_stem(kept), kept);
+    }
+
+    // ASCII follows the rule it always had
+    assert_eq!(sanitize_file_stem("Body Mat/a:b"), "Body_Mat_a_b");
+
+    // A control, an ideographic space and a mark that reverses the text after it
+    assert_eq!(sanitize_file_stem("a\u{85}b\u{3000}c\u{202e}d"), "a_b_c_d");
+    assert!(sanitize_file_stem("com².png").starts_with('_'), "a reserved port");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_long_name_in_another_alphabet_still_fits_a_file_name() {
+    let fx = Fx::new(&default_channels());
+    let files = fx.render_preset("Unreal Engine (Packed)");
+    let dir = std::env::temp_dir().join(format!("tc-formats-long-unicode-{}", std::process::id()));
+    for long in ["身".repeat(300), format!("a{}", "😀".repeat(300))] {
+        let stem = sanitize_file_stem(&long);
+        assert!(stem.len() <= MAX_STEM && long.starts_with(&stem), "cut between characters: {} bytes", stem.len());
+        assert_eq!(sanitize_file_stem(&stem), stem);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = write_files(&[ExportedFile { name: format!("{stem}.png"), ..files[0].clone() }], &dir).unwrap();
+        assert!(paths[0].is_file());
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn names_that_differ_only_in_the_case_of_an_accented_letter_are_one_file() {
+    let fx = Fx::new(&default_channels());
+    let rendered = fx.render_preset("Unreal Engine (Packed)");
+    let named = |name: &str| ExportedFile { name: name.into(), ..rendered[0].clone() };
+    let mut files = vec![named("Óxido.png"), named("óxido.png")];
+
+    skip_repeated_names(&mut files);
+
+    assert_eq!(files.len(), 1, "the second would replace the first on Windows and macOS");
+}
