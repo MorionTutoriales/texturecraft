@@ -7,7 +7,8 @@ use egui_kittest::Harness;
 use texturecraft_ui_egui::TextureCraftApp;
 
 fn notices(harness: &Harness<'_, TextureCraftApp>) -> usize {
-    harness.state().toasts.iter().filter(|toast| toast.text.contains("autosave-notice")).count()
+    // Other loaders name the broken data folder too: only the autosave's own notice counts
+    harness.state().toasts.iter().filter(|toast| toast.text.starts_with("Autosave to ") && toast.text.contains("autosave-notice")).count()
 }
 
 /// Run frames until `done`, giving the autosave worker real time to finish.
@@ -29,7 +30,14 @@ fn a_failing_autosave_is_announced_once_until_it_works_again() {
 
     let session = texturecraft_engine::sample_session(128, 32).unwrap();
     // Each frame is longer than the shortest autosave period, so every frame is due
-    let mut harness = Harness::builder().with_step_dt(61.0).build_eframe(|context| TextureCraftApp::new(context, session));
+    let mut harness = Harness::builder()
+        .with_step_dt(61.0)
+        .with_context_setup(texturecraft_ui_egui::framework::install_headless)
+        .build_eframe(|context| TextureCraftApp::new(context, session));
+    // The notice is matched by its English text, whatever the system's language
+    harness.state_mut().ui.prefs.language = "en".into();
+    // One frame applies the language before any autosave reports
+    harness.step();
     harness.state_mut().ui.prefs.autosave_minutes = 1;
     harness.state_mut().session.modified = true;
 

@@ -1074,9 +1074,10 @@ impl TextureCraftApp {
             let result =
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| reservation.save(&path, &snapshot).map_err(|error| error.to_string()));
             drop(snapshot);
-            drop(reservation);
 
+            // Report while the reservation still holds off the next autosave, so results arrive in the order of the attempts
             reporter.report(path, result);
+            drop(reservation);
         });
         if let Err(e) = spawned {
             spawn_reporter.report(target, Err(e.to_string()));
