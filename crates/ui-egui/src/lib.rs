@@ -10,6 +10,8 @@
 mod anchor_properties;
 mod angle_dial;
 mod ask;
+#[cfg(not(target_arch = "wasm32"))]
+mod autosave_notice;
 mod bake_job;
 pub mod bake_mode;
 mod bake_preset;
@@ -357,6 +359,8 @@ pub struct TextureCraftApp {
     /// When the next autosave is due (seconds of app time; desktop only).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     next_autosave: f64,
+    #[cfg(not(target_arch = "wasm32"))]
+    autosave_notice: autosave_notice::AutosaveNotice,
     /// The brightness and accent the style was last built for.
     styled: Option<(theme::Brightness, theme::Accent)>,
     /// Whether the window had focus last frame.
@@ -493,6 +497,8 @@ impl TextureCraftApp {
             fired_clipboard: Vec::new(),
             last_time: 0.0,
             next_autosave,
+            #[cfg(not(target_arch = "wasm32"))]
+            autosave_notice: Default::default(),
             styled: None,
             focused: true,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1033,7 +1039,7 @@ impl TextureCraftApp {
     /// Every `prefs.autosave_minutes`, write a modified project to the autosave folder (encoded
     /// and written on a worker thread; the project data is shared copy-on-write).
     #[cfg(not(target_arch = "wasm32"))]
-    fn autosave(&mut self, now: f64) {
+    fn autosave(&mut self, ctx: &egui::Context, now: f64) {
         let period = autosave_period_seconds(self.ui.prefs.autosave_minutes);
 
         // The clock starts at the first unsaved change
@@ -1058,19 +1064,19 @@ impl TextureCraftApp {
             texturecraft_engine::core::PROJECT_EXT
         ));
         let snapshot = self.session.project_snapshot();
+        let reporter = self.autosave_notice.reporter(ctx);
+        let spawn_reporter = self.autosave_notice.reporter(ctx);
+        let target = path.clone();
         let spawned = std::thread::Builder::new().name("texturecraft-autosave".into()).spawn(move || {
             let result =
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| reservation.save(&path, &snapshot).map_err(|error| error.to_string()));
             drop(snapshot);
             drop(reservation);
 
-            match result {
-                Ok(()) => log::info!("autosaved {}", path.display()),
-                Err(e) => log::warn!("autosave to {} failed: {e}", path.display()),
-            }
+            reporter.report(path, result);
         });
         if let Err(e) = spawned {
-            log::warn!("could not start autosave: {e}");
+            spawn_reporter.report(target, Err(e.to_string()));
         }
     }
 }
@@ -1213,7 +1219,9 @@ impl eframe::App for TextureCraftApp {
             ctx.set_zoom_factor(scale);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.autosave(now);
+        self.autosave(ctx, now);
+        #[cfg(not(target_arch = "wasm32"))]
+        autosave_notice::poll(self);
         i18n::set_language(&self.ui.prefs.language);
         #[cfg(target_arch = "wasm32")]
         {
