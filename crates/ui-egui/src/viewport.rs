@@ -2966,8 +2966,9 @@ mod tests {
         let session = &mut harness.state_mut().session;
         let instance = execute(session, "layer.instance", &json!({"layer": original.layer.0, "ts": 1})).unwrap()["layer"].clone();
 
-        // The source effect remains a valid inherited target when selection changes to its instance
-        assert!(execute(session, "layer.select", &json!({"layer": instance, "target": effect.0})).is_err());
+        // The source effect is a valid inherited target when selection changes to its instance
+        execute(session, "layer.select", &json!({"layer": instance, "target": effect.0})).unwrap();
+        assert_eq!(session.target, texturecraft_engine::StackTarget::Effect(effect));
 
         assert_eq!(session.ts(), 1);
         assert_eq!(session.selected_layer().unwrap().0, instance.as_u64().unwrap());
