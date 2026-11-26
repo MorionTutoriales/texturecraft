@@ -7,6 +7,7 @@ use texturecraft_engine::Tool;
 
 use crate::TextureCraftApp;
 use crate::drawn_icon::DrawnIcon;
+use crate::frame_gizmo::warp_toolbar::{self, WarpTarget};
 use crate::i18n::{tr, trf};
 use crate::keymap::{shortcut_of, tip};
 use crate::state::{Mode, ViewLayout};
@@ -58,16 +59,18 @@ pub fn paint_bar(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
                     return;
                 }
 
+                let warp_target = WarpTarget::of(app);
+                let tool_usable = warp_target.is_none() && app.session.tool_usable(app.session.tool.tool);
                 ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
                 if !scroll_views {
                     view_buttons(app, ui);
-                    if app.session.tool_usable(app.session.tool.tool) {
+                    if warp_target.is_some() || tool_usable {
                         ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
                     }
                 }
 
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    scrolling_tool_controls(app, ui, &tokens, scroll_views);
+                    scrolling_tool_controls(app, ui, &tokens, scroll_views, warp_target, tool_usable);
                 });
             });
         });
@@ -175,7 +178,7 @@ fn rotation_dropdown(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
 }
 
 /// An icon button with a caret that opens `menu` below it, highlighted while open
-fn icon_dropdown(ui: &mut egui::Ui, id_salt: &str, icon: &str, tooltip: &str, menu: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn icon_dropdown(ui: &mut egui::Ui, id_salt: &str, icon: &str, tooltip: &str, menu: impl FnOnce(&mut egui::Ui)) {
     let button_size = ui.spacing().interact_size.y;
     let popup_id = ui.make_persistent_id(id_salt);
     let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
@@ -198,7 +201,14 @@ fn dropdown_row(ui: &mut egui::Ui, icon: &str, label: &str, shortcut: Option<&st
 }
 
 /// Scroll tool controls and, in narrow viewports, the view buttons
-fn scrolling_tool_controls(app: &mut TextureCraftApp, ui: &mut egui::Ui, tokens: &Tokens, scroll_views: bool) {
+fn scrolling_tool_controls(
+    app: &mut TextureCraftApp,
+    ui: &mut egui::Ui,
+    tokens: &Tokens,
+    scroll_views: bool,
+    warp_target: Option<WarpTarget>,
+    tool_usable: bool,
+) {
     let button_size = ui.spacing().interact_size.y;
     let strip_width = ui.available_width();
     let overflow_id = egui::Id::unique("tool_controls_overflow");
@@ -224,13 +234,14 @@ fn scrolling_tool_controls(app: &mut TextureCraftApp, ui: &mut egui::Ui, tokens:
             scroll_area.show(ui, |ui| {
                 ui.scroll_with_delta(vec2(scroll_delta, 0.0));
                 ui.horizontal_centered(|ui| {
-                    // A tool that can't act on the selection leaves the bar, as the shelf greys it
-                    let tool_usable = app.session.tool_usable(app.session.tool.tool);
-                    if tool_usable {
+                    if let Some(target) = warp_target {
+                        warp_toolbar::controls(app, ui, target);
+                    } else if tool_usable {
                         tool_controls(app, ui, tokens);
                     }
+
                     if scroll_views {
-                        if tool_usable {
+                        if warp_target.is_some() || tool_usable {
                             ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
                         }
                         let size = vec2(view_buttons_width(button_size, ui.spacing().item_spacing.x), ui.available_height());
