@@ -576,9 +576,30 @@ pub fn sanitize_library_stem(s: &str) -> String {
     sanitize_stem(s, is_ascii_name_char)
 }
 
-/// The form of a file name that compares equal for names Windows and macOS treat as one file.
+/// The form of a file name that compares equal for names Windows or macOS may treat as one file.
 pub fn file_name_key(name: &str) -> String {
-    name.to_lowercase()
+    // Letter by letter, as file systems compare: `str::to_lowercase` writes a capital sigma as the final form at the
+    // end of a word. Where names are case folded, the two small sigmas are one letter too
+    name.chars().flat_map(char::to_lowercase).map(|c| if c == 'ς' { 'σ' } else { c }).collect()
+}
+
+/// `name` cut between characters to at most `max_bytes`
+fn cut_to(name: &mut String, max_bytes: usize) {
+    let mut end = max_bytes.min(name.len());
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.truncate(end);
+}
+
+/// The sanitized path `stem` numbered `_k`, its file name cut so the number still fits within [`MAX_STEM`] bytes
+fn numbered_stem(stem: &str, k: u32) -> String {
+    let suffix = format!("_{k}");
+    let name_start = stem.rfind('/').map_or(0, |slash| slash + 1);
+    let mut numbered = stem.to_string();
+    cut_to(&mut numbered, name_start + MAX_STEM.saturating_sub(suffix.len()));
+    numbered.push_str(&suffix);
+    numbered
 }
 
 fn is_ascii_name_char(c: char) -> bool {
@@ -614,6 +635,7 @@ fn sanitize_stem(s: &str, keep: impl Fn(char) -> bool) -> String {
     });
     if matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered_port {
         out.insert(0, '_');
+        cut_to(&mut out, MAX_STEM);
     }
     out
 }
@@ -733,7 +755,7 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
             // Compare names case-insensitively for Windows and macOS
             let mut k = 2;
             while used.contains(&file_name_key(&name)) {
-                name = format!("{stem}_{k}.{ext}");
+                name = format!("{}.{ext}", numbered_stem(&stem, k));
                 k += 1;
             }
             if k > 2 {
@@ -764,10 +786,13 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
 
             // Use a UDIM name only when substituting its tile recovers the output name
             // Truncation or literal placeholder text can make that substitution ambiguous
-            let udim_name = token_stem.filter(|t| tile.is_some_and(|n| t.contains("UDIMTOKEN") && t.replace("UDIMTOKEN", &n.to_string()) == stem)).map(|t| {
-                let renamed = if k > 2 { format!("_{}", k - 1) } else { String::new() };
-                format!("{t}{renamed}.{ext}").replace("UDIMTOKEN", "<UDIM>")
-            });
+            let renamed = if k > 2 { format!("_{}", k - 1) } else { String::new() };
+
+            // A numbered name that had to be cut no longer follows the pattern
+            let whole = name == format!("{stem}{renamed}.{ext}");
+            let udim_name = token_stem
+                .filter(|t| whole && tile.is_some_and(|n| t.contains("UDIMTOKEN") && t.replace("UDIMTOKEN", &n.to_string()) == stem))
+                .map(|t| format!("{t}{renamed}.{ext}").replace("UDIMTOKEN", "<UDIM>"));
             out.push(PlannedFile { name, map: i, format, bit_depth, dither, tile, udim_name, warnings });
         }
     }

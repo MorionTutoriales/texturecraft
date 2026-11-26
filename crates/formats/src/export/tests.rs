@@ -1619,3 +1619,47 @@ fn names_that_differ_only_in_the_case_of_an_accented_letter_are_one_file() {
 
     assert_eq!(files.len(), 1, "the second would replace the first on Windows and macOS");
 }
+
+#[test]
+fn a_reserved_name_that_fills_the_limit_stays_within_it() {
+    for reserved in ["COM².", "con.", "LPT9."] {
+        let stem = sanitize_file_stem(&format!("{reserved}{}", "a".repeat(300)));
+        assert!(stem.starts_with('_') && stem.len() <= MAX_STEM, "{} bytes: {stem}", stem.len());
+        assert_eq!(sanitize_file_stem(&stem), stem, "writing the file accepts the name");
+    }
+}
+
+#[test]
+fn numbering_names_cut_to_the_same_stem_keeps_them_within_the_limit() {
+    // One byte a character fills the limit exactly; four leave it a few bytes short
+    for long in ["a".repeat(300), "😀".repeat(60)] {
+        let mut fx = Fx::new(&default_channels());
+        fx.project.texture_sets[0].name = long;
+        let preset = builtin_preset("Unreal Engine (Packed)").unwrap();
+
+        let planned = list_outputs(&fx.project, 0, "mesh", &ExportOptions::new(preset)).unwrap();
+
+        assert!(planned.len() > 1);
+        let mut names = std::collections::BTreeSet::new();
+        for file in &planned {
+            let stem = file.name.rsplit_once('.').unwrap().0;
+            assert_eq!(sanitize_file_path(stem), stem, "writing the file accepts the name: {} bytes", stem.len());
+            assert!(names.insert(file_name_key(&file.name)), "two files of one name: {}", file.name);
+        }
+    }
+}
+
+#[test]
+fn greek_sigmas_that_a_file_system_may_merge_are_one_file() {
+    let fx = Fx::new(&default_channels());
+    let rendered = fx.render_preset("Unreal Engine (Packed)");
+    let named = |name: &str| ExportedFile { name: name.into(), ..rendered[0].clone() };
+    // The capital at the end of a word, and the final form of the small letter
+    for (first, second) in [("ΟΔΟΣ_a.png", "οδοσ_a.png"), ("σ.png", "ς.png")] {
+        let mut files = vec![named(first), named(second)];
+
+        skip_repeated_names(&mut files);
+
+        assert_eq!(files.len(), 1, "{first} and {second}");
+    }
+}
