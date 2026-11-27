@@ -1650,6 +1650,27 @@ fn numbering_names_cut_to_the_same_stem_keeps_them_within_the_limit() {
 }
 
 #[test]
+fn composed_and_decomposed_letters_are_one_file() {
+    // One accented letter written as one character, and as a letter with a combining accent
+    let (composed, decomposed) = ("\u{e9}", "e\u{301}");
+    let fx = Fx::new(&default_channels());
+    let rendered = fx.render_preset("Unreal Engine (Packed)");
+    let named = |stem: &str| ExportedFile { name: format!("{stem}.png"), ..rendered[0].clone() };
+    let mut files = vec![named(composed), named(decomposed)];
+
+    skip_repeated_names(&mut files);
+
+    assert_eq!(files.len(), 1);
+
+    let color = SourceRef::Channel { channel: Channel::BaseColor, component: 0 };
+    let maps = [composed, decomposed].map(|file| gray_map(file, color.clone())).to_vec();
+    let planned = list_outputs(&fx.project, 0, "mesh", &ExportOptions::new(ExportPreset { name: "forms".into(), maps })).unwrap();
+
+    assert_eq!(planned[0].name, format!("{composed}.png"), "the spelling is kept");
+    assert_eq!(planned[1].name, format!("{decomposed}_2.png"), "the second is numbered");
+}
+
+#[test]
 fn greek_sigmas_that_a_file_system_may_merge_are_one_file() {
     let fx = Fx::new(&default_channels());
     let rendered = fx.render_preset("Unreal Engine (Packed)");

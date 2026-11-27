@@ -16,6 +16,7 @@ use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 use std::io::Cursor;
 
 use craft_image_codecs::{ChannelLayout, EncodeOptions, Format as CodecFormat, Image as CodecImage, SampleType};
+use icu_normalizer::DecomposingNormalizerBorrowed;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use texturecraft_compose::{BakedMaps, Composite};
@@ -578,9 +579,12 @@ pub fn sanitize_library_stem(s: &str) -> String {
 
 /// The form of a file name that compares equal for names Windows or macOS may treat as one file.
 pub fn file_name_key(name: &str) -> String {
-    // Letter by letter, as file systems compare: `str::to_lowercase` writes a capital sigma as the final form at the
+    // macOS takes the composed and decomposed forms of a letter as one name, so compare them decomposed. Lower case
+    // letter by letter, as file systems compare: `str::to_lowercase` writes a capital sigma as the final form at the
     // end of a word. Where names are case folded, the two small sigmas are one letter too
-    name.chars().flat_map(char::to_lowercase).map(|c| if c == 'ς' { 'σ' } else { c }).collect()
+    let nfd = DecomposingNormalizerBorrowed::new_nfd();
+    let lower: String = nfd.normalize(name).chars().flat_map(char::to_lowercase).map(|c| if c == 'ς' { 'σ' } else { c }).collect();
+    nfd.normalize(&lower).into_owned()
 }
 
 /// `name` cut between characters to at most `max_bytes`
