@@ -240,7 +240,7 @@ keeps its state in a throwaway file.
 | `ui.menu.invoke` id `ui.saveAsTemplate` | `{id}` | File > More Save Options > Save As Template opens a save dialog in the user templates folder. The choice supplies the file path and template name to `project.template.save`. `ui.saveReduced` (Save and Reduce File Size) is listed as not implemented and not enabled |
 | `ui.menu.invoke` ids `ui.help.releaseNotes`, `ui.help.showLog`, `ui.help.exportLog` | `{id}` | Help > Release Notes opens the releases page in the browser; Help > Show Log opens the current desktop run's rolling `log.txt` in the system text-file handler; Help > Export Log exports the session log with each entry’s recorded UTC time, severity and source (a save dialog on desktop with a `Log_TextureCraft_<version>_<date>_<os>_<gpuMode>.txt` name, a download on the web) |
 | `ui.menu.invoke` id `ui.wireframe` | `{id}` | Show mesh wireframe: shows or hides the mesh wireframe in the 3D and 2D views (the Display Settings check box). It has no menu entry and no default key; bind it in Settings > Shortcuts. The key bindings `camera.next` and `camera.previous` (Select next camera `>`, Select previous camera `<`) and `ui.mode.bake` (F8) run the same commands as before |
-| `ui.reset` | | resets the panels, view layout, zoom and every other view setting at once, without the question the Reset UI menu item asks; settings and shortcuts stay |
+| `ui.reset` | | resets the panels, view settings and interface language without asking for confirmation. Other preferences and shortcuts stay |
 | `ui.bake.start` | `{ts?: index \| [indices]}` (default: the sets ticked in Bake mode) | Opens Bake mode and bakes in the background like the Bake button: the 3D view shows the maps landing on the model as they finish (see *Live bake preview*). → the `bake.preview` state. Errors when a bake is already running |
 | `ui.bake.cancel` | | Stops the running bake; the set being baked keeps the maps it had, sets already finished stay applied, and the previous view mode comes back |
 | `ui.set` | fields of the UI state, e.g. `{"layout": "Only3D"}`; `dock` is the panel layout, a craft-ui docking `Workspace` (`{version, layout: {root, floating}, hidden}`; `root` is a tree of `Split`, `Tabs` and `Stack` nodes over the panels `Viewport`, `Assets`, `TextureSetList`, `Layers`, `TextureSetSettings`, `Properties`, `Display`, `Shader`, `History`, `Log`, `BakingLog`, `MeshMapBakers`, `BakeMaps`, `BakeSettings`, `Export` and `Renderer` (a floating window holding one right-bar panel is that panel undocked); `hidden` lists where each closed panel was, so reopening it puts it back; a layout that does not read or has no docked `Viewport` becomes the default), `prefs` the settings (`{"language": "ja", "viewport_texture": 1, "brightness": "light", "accent": "blue"}`; missing fields take their defaults; `brightness` is `dark`, `mediumDark` (default), `mediumLight` or `light`, `accent` `copper` (default), `coral`, `blue`, `violet`, `green`, `amber` or `pink`, applied on the next frame; `system_title_bar` `true` has the system draw the title bar from the next start), `keymap` the custom shortcuts (`{"file.save": "F5"}`, `""` unbinds), `log_channel` the Log panel's tab (`General` or `Assets`) | `null` |
@@ -254,6 +254,7 @@ The empty-project menus keep Recent Projects openable with Clear disabled when t
 `ui.recent.clear` clears that list. More Save Options is disabled until a project is open.
 Help > Shortcuts list opens Settings on its Shortcuts page. Window > Reset UI restores the
 Assets, Layers, Properties, Texture Set List and Texture Set Settings panels and both toolbars.
+It also restores Default (System Language).
 Baking Log and the bake/render settings views are disabled without a project. Import resources
 can open its dialog on desktop without a project; importing still requires an open project,
 and the dialog explains that asset-library import is not available yet.
@@ -339,10 +340,16 @@ Other preferences set through `ui.set {"prefs": {...}}`: `language` (`""` follow
 language), `work_threads` (worker threads for painting, baking and export; 0 uses every logical
 CPU; read at startup), `rotation_speed` (default 2), `zoom_speed` and `wheel_speed` (default 1,
 each from 0.1 to 10) with `zoom_inverse` and `wheel_inverse`, `gpu_raytracing` (false keeps bake
-rays on the CPU) and `libraries` (the folders the shelf scans for saved smart materials and masks).
+rays on the CPU), `show_world_axes` (the 3D view's X, Y and Z corner, default true) and `libraries`
+(the folders the shelf scans for saved smart materials and masks). `live_preview_baking` enables
+the automatic Bake mode map preview when the panel's Map Preview switch is also on.
+`show_keyboard_helper`, `only_selected_material_when_painting`, `save_preprocessed_scene_files` and
+`local_cache_directory` are stored preferences for future use. For `local_cache_directory`, an
+empty or relative path selects the app's per-user cache directory, or the profile cache for Nightly.
 For example, the `libraries` field can contain `[{"name": "Studio", "path": "/assets/studio"}]`.
 Use an absolute path on the host running TextureCraft. To change one preference, read `state.prefs`
 with `ui.inspect`, update that field and send the full `prefs` object to `ui.set`.
+A `prefs` object without `language` sets the system language (`""`), the default.
 
 ## MCP server
 
@@ -383,7 +390,7 @@ With `rebuildUvs: true`, the project file saves the generated layout. Reopening 
 | `project_save` | `{path?}` | `.tcraft` (appended if missing), relative to the write root |
 | `mesh_import` | `{path, resolution?}` | New project from .glb/.gltf/.fbx/.dae/.usd/.usda/.usdc/.usdz/.abc/.obj/.ply/.stl; a .gltf's buffers and images and a loose USD layer's textures are read from its folder |
 | `mesh_reimport` | `{path?, preserveStrokes?}` | Reimport the mesh from a file, or (no path) from the project's own copy; bridge mode supports only the latter |
-| `mesh_export` | `{path, format?}` | The mesh as obj, glb, usda, usdc or usdz below the write root (obj: its .mtl and textures, usda / usdc: textures next to it) → `{path, textures?}` |
+| `mesh_export` | `{path, format?, recomputeNormals?}` | The mesh as obj, glb, usda, usdc or usdz below the write root; `recomputeNormals: true` writes smooth area-weighted normals on the exported copy (default false) (obj: its .mtl and textures, usda / usdc: textures next to it) → `{path, textures?}` |
 | `bake_mesh_add` | `{path, cage?}` | Add a high-definition mesh for baking, or set the cage → `{name, meshes}` |
 | `resource_import` | `{path}` | Image resource (png, jpg, tga, tif, bmp, webp, exr, hdr) → its name, for `layer.add.image` / `tool.stencil`, or as a mesh map instead of baking it: `textureSet.meshMap.set {ts?, map, image}` (`textureSet.meshMap.clear {ts?, map}` empties the slot); call it once per baked map file (the desktop app's `textureSet.meshMap.import`, which takes host paths, is refused through `command_run`) |
 | `material_save` | `{path, layer?, name?}` | A layer or folder as a `.tcmat` smart material below the write root |
@@ -458,7 +465,7 @@ File access follows `--read-root` / `--write-root` as for MCP.
 | `project.save` | `{path?}` |
 | `mesh.import` | `{path, resolution?, name?}` |
 | `mesh.reimport` | `{path?, preserveStrokes?}` |
-| `mesh.export` | `{path, format?}` |
+| `mesh.export` | `{path, format?, recomputeNormals?}` |
 | `bake.mesh.add` | `{path, cage?}` |
 | `resource.import` | `{path}` |
 | `material.save` | `{path, layer?, name?}` |
@@ -627,6 +634,10 @@ None is an undo step.
 `display.set` also takes `alignment` (`world` or `camera`: the environment, and the key light with it,
 turns with the camera about the vertical axis), `shadowMode` (`intensive`, `average` or `lightweight`, the
 default: the shadow map's resolution) and `shadowOpacity` (0 to 1, default 1: how dark the shadows are).
+Set `iorSpecular` to true to derive the Metallic Roughness surface reflectance at normal incidence
+from `ior` (clamped to 1–3). Specular Level scales this reflectance in the viewport, both path
+tracers and F0 map export. Path-traced transmission uses its own Fresnel calculation for glass
+interfaces. The setting defaults to false and is saved with the project and its templates.
 
 `viewport.view {mode: "image", image: <image resource>}` shows a project image as it is, stretched over
 the UV square, on the mesh and in the 2D view (the view picker's "Other..."). `display.set {soloUnlit}`

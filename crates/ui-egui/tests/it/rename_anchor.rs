@@ -47,7 +47,21 @@ fn save_to(h: &mut Harness<'_, TextureCraftApp>, file: &Path) {
     h.state_mut().file_dialogs.set_override(Some(Box::new(move |_| Answer::Paths(vec![path.clone()]))));
     let ctx = h.ctx.clone();
     texturecraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "file.saveAs");
-    h.run_steps(3);
+
+    // Wait for the app to collect the worker result
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    h.step();
+    let target = file.display().to_string();
+    while !(file.exists() && h.state().session.path.as_deref() == Some(target.as_str()) && texturecraft_ui_egui::menus::enabled(h.state(), "file.saveAs")) {
+        if let Some(toast) = h.state().toasts.iter().find(|toast| toast.error) {
+            panic!("the save failed: {}", toast.text);
+        }
+
+        assert!(std::time::Instant::now() < deadline, "the save did not finish");
+        h.step();
+        std::thread::yield_now();
+    }
+
     assert!(file.exists(), "Save as wrote the project");
     assert!(!h.state().session.modified, "the project counts as saved");
 }
